@@ -1,0 +1,134 @@
+#include "led_status.h"
+
+uint8_t currentStatus = STATUS_BOOTING;
+unsigned long lastBlinkTime = 0;
+bool ledState = false;
+bool ppsDetected = false;
+unsigned long bootStartTime = 0;
+
+uint8_t blinkPatternStep = 0;
+unsigned long patternStartTime = 0;
+
+void initStatusLED() {
+  pinMode(LED_STATUS_PIN, OUTPUT);
+  digitalWrite(LED_STATUS_PIN, HIGH);
+  pinMode(GPS_PPS, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(GPS_PPS), onPPSInterrupt, RISING);
+
+  bootStartTime = millis();
+  currentStatus = STATUS_BOOTING;
+
+  Serial.println("LED: Инициализация светодиода статуса (GPIO8)");
+  Serial.println("LED: Режим загрузки (постоянно светится)");
+}
+
+void setStatus(uint8_t status) {
+  if (currentStatus != status) {
+    currentStatus = status;
+    lastBlinkTime = millis();
+    ledState = false;
+    blinkPatternStep = 0;
+    patternStartTime = millis();
+
+    switch (status) {
+    case STATUS_BOOTING:
+      Serial.println("LED: Режим загрузки (постоянно светится)");
+      break;
+    case STATUS_NO_FIX:
+      Serial.println("LED: Нет фиксации GPS (паттерн .--.------)");
+      break;
+    case STATUS_FIX_SYNC:
+      Serial.println("LED: Фиксация GPS с PPS (синхронно с PPS)");
+      break;
+    case STATUS_NO_MODEM:
+      Serial.println("LED: Нет связи с модемом (паттерн .--.--.---)");
+      break;
+    case STATUS_READY:
+      Serial.println("LED: Готов к работе (выключен)");
+      break;
+    default:
+      Serial.printf("LED: Неизвестный статус %d\n", status);
+      break;
+    }
+  }
+}
+
+static inline void writeLedOn(bool on) {
+  static bool lastPinHigh = true;
+  bool wantPinHigh = on ? false : true;
+  if (wantPinHigh != lastPinHigh) {
+    digitalWrite(LED_STATUS_PIN, wantPinHigh ? HIGH : LOW);
+    lastPinHigh = wantPinHigh;
+  }
+}
+
+void updateStatusLED() {
+  static unsigned long lastLedTick = 0;
+  unsigned long now = millis();
+  if (now - lastLedTick < 10) {
+    return;
+  }
+  lastLedTick = now;
+  unsigned long currentTime = now;
+
+  switch (currentStatus) {
+  case STATUS_BOOTING:
+    writeLedOn(true);
+    if (currentTime - bootStartTime >= BOOT_DURATION_MS) {
+      setStatus(STATUS_NO_FIX);
+    }
+    break;
+
+  case STATUS_NO_FIX: {
+    unsigned long patternTime =
+        (currentTime - patternStartTime) % 2000;
+
+    if (patternTime < 200) {
+      writeLedOn(true);
+    } else if (patternTime < 600) {
+      writeLedOn(false);
+    } else if (patternTime < 800) {
+      writeLedOn(true);
+    } else {
+      writeLedOn(false);
+    }
+  } break;
+
+  case STATUS_FIX_SYNC:
+    if (ppsDetected) {
+      writeLedOn(true);
+      ppsDetected = false;
+      lastBlinkTime = currentTime;
+    } else if (currentTime - lastBlinkTime >= BLINK_DURATION_MS) {
+      writeLedOn(false);
+    }
+    break;
+
+  case STATUS_NO_MODEM:
+    {
+      unsigned long patternTime =
+          (currentTime - patternStartTime) % 2000;
+
+      if (patternTime < 200) {
+        writeLedOn(true);
+      } else if (patternTime < 400) {
+        writeLedOn(false);
+      } else if (patternTime < 600) {
+        writeLedOn(true);
+      } else if (patternTime < 800) {
+        writeLedOn(false);
+      } else if (patternTime < 1000) {
+        writeLedOn(true);
+      } else {
+        writeLedOn(false);
+      }
+    }
+    break;
+
+  case STATUS_READY:
+    writeLedOn(false);
+    break;
+  }
+}
+
+void IRAM_ATTR onPPSInterrupt() { ppsDetected = true; }
