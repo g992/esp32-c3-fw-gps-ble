@@ -1,5 +1,7 @@
 #include "led_status.h"
 
+#include "logger.h"
+
 uint8_t currentStatus = STATUS_BOOTING;
 unsigned long lastBlinkTime = 0;
 bool ledState = false;
@@ -18,8 +20,8 @@ void initStatusLED() {
   bootStartTime = millis();
   currentStatus = STATUS_BOOTING;
 
-  Serial.println("LED: Инициализация светодиода статуса (GPIO8)");
-  Serial.println("LED: Режим загрузки (постоянно светится)");
+  logPrintln("[led] Initialising status LED (GPIO8)");
+  logPrintln("[led] Mode set: boot (steady on)");
 }
 
 void setStatus(uint8_t status) {
@@ -32,22 +34,22 @@ void setStatus(uint8_t status) {
 
     switch (status) {
     case STATUS_BOOTING:
-      Serial.println("LED: Режим загрузки (постоянно светится)");
+      logPrintln("[led] Mode set: boot (steady on)");
       break;
     case STATUS_NO_FIX:
-      Serial.println("LED: Нет фиксации GPS (паттерн .--.------)");
+      logPrintln("[led] Mode set: no fix (short-short-long)");
       break;
     case STATUS_FIX_SYNC:
-      Serial.println("LED: Фиксация GPS с PPS (синхронно с PPS)");
+      logPrintln("[led] Mode set: fix with PPS (pps synced)");
       break;
     case STATUS_NO_MODEM:
-      Serial.println("LED: Нет связи с модемом (паттерн .--.--.---)");
+      logPrintln("[led] Mode set: modem lost (short-short-short)");
       break;
     case STATUS_READY:
-      Serial.println("LED: Готов к работе (выключен)");
+      logPrintln("[led] Mode set: ready (off)");
       break;
     default:
-      Serial.printf("LED: Неизвестный статус %d\n", status);
+      logPrintf("[led] Unknown status %d\n", status);
       break;
     }
   }

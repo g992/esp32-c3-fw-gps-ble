@@ -1,7 +1,12 @@
 #include "gps_ble.h"
 
+#include "system_mode.h"
+#include "wifi_manager.h"
+
 NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
+NimBLECharacteristic *pCharApControl = nullptr;
+NimBLECharacteristic *pCharModeControl = nullptr;
 
 NimBLEServer *pServer = nullptr;
 
@@ -19,6 +24,41 @@ static float lastSpeed = 0.0f;
 static float lastAlt = 0.0f;
 static bool haveLastNav = false;
 
+static uint8_t apStateValue = '0';
+static uint8_t modeStateValue = '0';
+
+static void refreshApControlCharacteristic() {
+  if (!pCharApControl)
+    return;
+
+  bool apActive = wifiManagerIsApActive();
+  uint8_t desired = apActive ? '1' : '0';
+  if (apStateValue != desired) {
+    apStateValue = desired;
+  }
+  pCharApControl->setValue(&apStateValue, 1);
+  if (bleConnected && pCharApControl->getSubscribedCount() > 0) {
+    pCharApControl->notify();
+  }
+}
+
+static void refreshModeCharacteristic() {
+  if (!pCharModeControl)
+    return;
+
+  bool passthrough = isSerialPassthroughMode();
+  uint8_t desired = passthrough ? '1' : '0';
+  if (modeStateValue != desired) {
+    modeStateValue = desired;
+  }
+  pCharModeControl->setValue(&modeStateValue, 1);
+  if (bleConnected && pCharModeControl->getSubscribedCount() > 0) {
+    pCharModeControl->notify();
+  }
+}
+
+static void onModeChanged(OperationMode) { refreshModeCharacteristic(); }
+
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server) {
     server->updateConnParams(0, 24, 48, 0, 400);
@@ -34,6 +74,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         pCharStatus->notify();
       }
     }
+    refreshApControlCharacteristic();
+    refreshModeCharacteristic();
   }
 
   void onDisconnect(NimBLEServer *) {
@@ -46,6 +88,33 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 class GeneralChrCallbacks : public NimBLECharacteristicCallbacks {
 
 } generalChrCallbacks;
+
+class ApControlCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    bool enable = !value.empty() && (value[0] == '1');
+    wifiManagerHandleBleRequest(enable);
+    refreshApControlCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) {
+    refreshApControlCharacteristic();
+  }
+} apControlCallbacks;
+
+class ModeControlCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    bool enablePassthrough = !value.empty() && (value[0] == '1');
+    OperationMode desired = enablePassthrough
+                                ? OperationMode::SerialPassthrough
+                                : OperationMode::Navigation;
+    setOperationMode(desired);
+    refreshModeCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) { refreshModeCharacteristic(); }
+} modeControlCallbacks;
 
 void initBLE() {
   NimBLEDevice::init("ESP32-GPS-BLE");
@@ -63,6 +132,21 @@ void initBLE() {
   pCharStatus = pService->createCharacteristic(
       CHAR_STATUS_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pCharStatus->setCallbacks(&generalChrCallbacks);
+
+  pCharApControl = pService->createCharacteristic(
+      CHAR_AP_CONTROL_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE |
+          NIMBLE_PROPERTY::NOTIFY);
+  pCharApControl->setCallbacks(&apControlCallbacks);
+  refreshApControlCharacteristic();
+
+  pCharModeControl = pService->createCharacteristic(
+      CHAR_MODE_CONTROL_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE |
+          NIMBLE_PROPERTY::NOTIFY);
+  pCharModeControl->setCallbacks(&modeControlCallbacks);
+  registerModeChangeHandler(onModeChanged);
+  refreshModeCharacteristic();
 
   pService->start();
 
@@ -84,9 +168,6 @@ static inline bool diffExceeds(float a, float b, float eps) {
 
 void updateNavData(float lat, float lon, float heading, float speed,
                    float altitude) {
-  if (!pCharNavData || !bleConnected)
-    return;
-
   bool needSend = !haveLastNav || diffExceeds(lat, lastLat, kLatLonEps) ||
                   diffExceeds(lon, lastLon, kLatLonEps) ||
                   diffExceeds(heading, lastHeading, kHeadingEps) ||
@@ -103,6 +184,11 @@ void updateNavData(float lat, float lon, float heading, float speed,
   lastAlt = altitude;
   haveLastNav = true;
 
+  wifiManagerUpdateNavSnapshot(lat, lon, heading, speed, altitude);
+
+  if (!pCharNavData || !bleConnected)
+    return;
+
   char json[112];
   int len = snprintf(
       json, sizeof(json),
@@ -114,8 +200,11 @@ void updateNavData(float lat, float lon, float heading, float speed,
   pCharNavData->notify();
 }
 
-void updateSystemStatus(uint8_t fix, float hdop, const String &signalsArrayJson,
-                        int32_t ttffSeconds) {
+void updateSystemStatus(uint8_t fix, float hdop, uint8_t satellites,
+                        const String &signalsArrayJson, int32_t ttffSeconds) {
+  wifiManagerUpdateStatusSnapshot(fix, hdop, signalsArrayJson, ttffSeconds,
+                                  satellites);
+
   if (!pCharStatus || !bleConnected)
     return;
 
@@ -129,3 +218,16 @@ void updateSystemStatus(uint8_t fix, float hdop, const String &signalsArrayJson,
   pCharStatus->setValue((uint8_t *)json, len);
   pCharStatus->notify();
 }
+
+void updateApControlCharacteristic(bool apActive) {
+  uint8_t desired = apActive ? '1' : '0';
+  apStateValue = desired;
+  if (pCharApControl) {
+    pCharApControl->setValue(&apStateValue, 1);
+    if (bleConnected && pCharApControl->getSubscribedCount() > 0) {
+      pCharApControl->notify();
+    }
+  }
+}
+
+void updatePassthroughModeCharacteristic() { refreshModeCharacteristic(); }

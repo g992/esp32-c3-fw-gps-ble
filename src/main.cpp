@@ -1,6 +1,9 @@
 #include "gps_ble.h"
 #include "gps_config.h"
 #include "led_status.h"
+#include "logger.h"
+#include "system_mode.h"
+#include "wifi_manager.h"
 #include <Arduino.h>
 #include <iarduino_GPS_NMEA.h>
 
@@ -16,13 +19,21 @@ static uint32_t bootMillis = 0;
 static bool firstFixCaptured = false;
 static int32_t ttffSeconds = -1;
 uint8_t satsInfo[32][7];
+static bool passthroughActive = false;
+
+static void onWifiApStateChanged(bool active) {
+  updateApControlCharacteristic(active);
+}
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("GPS BLE Booting...");
+  initSystemMode();
+  logPrintln("[sys] Booting firmware...");
 
   initBLE();
   initStatusLED();
+  initWifiManager(onWifiApStateChanged);
+  updateApControlCharacteristic(wifiManagerIsApActive());
 
   pinMode(GPS_EN, OUTPUT);
   digitalWrite(GPS_EN, HIGH);
@@ -32,24 +43,58 @@ void setup() {
   gps.begin(gpsSerial, true);
   gps.timeOut(1500);
 
-  Serial.println("Boot complete. Ready to work.");
+  logPrintln("[sys] Boot complete.");
   bootMillis = millis();
 }
 
 void loop() {
+  updateWifiManager();
+
+  bool passthrough = isSerialPassthroughMode();
+  if (passthrough != passthroughActive) {
+    passthroughActive = passthrough;
+    if (passthroughActive) {
+      setStatus(STATUS_READY);
+    } else {
+      navUpdateCounter = 0;
+      firstFixCaptured = false;
+      ttffSeconds = -1;
+      lastBLEUpdate = millis();
+    }
+  }
+
+  if (passthrough) {
+    while (gpsSerial.available() > 0) {
+      int byteValue = gpsSerial.read();
+      if (byteValue >= 0) {
+        Serial.write(static_cast<uint8_t>(byteValue));
+      }
+    }
+    while (Serial.available() > 0) {
+      int byteValue = Serial.read();
+      if (byteValue >= 0) {
+        gpsSerial.write(static_cast<uint8_t>(byteValue));
+      }
+    }
+    updateStatusLED();
+    delay(1);
+    return;
+  }
+
   gps.read(satsInfo);
 
   if (millis() - lastBLEUpdate > OUTPUT_INTERVAL_MS) {
     lastBLEUpdate = millis();
 
     uint8_t fix = (gps.errPos == 0) ? 1 : 0;
+    uint8_t activeSatellites = gps.satellites[GPS_ACTIVE];
 
     uint8_t systemStatus;
     if (currentStatus == STATUS_BOOTING) {
       systemStatus = STATUS_BOOTING;
-    } else if (!fix || gps.satellites[GPS_ACTIVE] < 4) {
+    } else if (!fix || activeSatellites < 4) {
       systemStatus = STATUS_NO_FIX;
-    } else if (fix && gps.satellites[GPS_ACTIVE] >= 4) {
+    } else if (fix && activeSatellites >= 4) {
       systemStatus = STATUS_FIX_SYNC;
     } else {
       systemStatus = STATUS_READY;
@@ -126,7 +171,8 @@ void loop() {
                      (prevStrong != strong) || (prevMedium != medium) ||
                      (prevWeak != weak);
       if (changed) {
-        updateSystemStatus(fix, gps.HDOP, String(signalsJson), ttffSeconds);
+        updateSystemStatus(fix, gps.HDOP, activeSatellites,
+                           String(signalsJson), ttffSeconds);
         prevFix = fix;
         prevHdop10 = hdop10;
         prevStrong = strong;

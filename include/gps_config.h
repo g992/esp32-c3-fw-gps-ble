@@ -10,6 +10,9 @@
 // Пины индикации
 #define LED_STATUS_PIN 8 // Светодиод статуса с инверсным управлением
 
+#define WIFI_AP_BUTTON_PIN 9   // Кнопка вызова режима точки доступа (активный уровень LOW)
+#define WIFI_AP_TRIGGER_MS 5000 // Время удержания для включения AP, мс
+
 // Настройки UART
 #define GPS_BAUD_RATE 115200 // Скорость обмена с GPS по UART
 
