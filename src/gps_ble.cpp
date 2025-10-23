@@ -1,5 +1,5 @@
 #include "gps_ble.h"
-
+#include "gps_serial_control.h"
 #include "system_mode.h"
 #include "wifi_manager.h"
 
@@ -7,6 +7,7 @@ NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
 NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
+NimBLECharacteristic *pCharGpsBaud = nullptr;
 
 NimBLEServer *pServer = nullptr;
 
@@ -27,6 +28,8 @@ static bool haveLastNav = false;
 static uint8_t apStateValue = '0';
 static uint8_t modeStateValue = '0';
 
+static void setGpsBaudCharacteristicValue(uint32_t baud);
+
 static void refreshApControlCharacteristic() {
   if (!pCharApControl)
     return;
@@ -37,9 +40,6 @@ static void refreshApControlCharacteristic() {
     apStateValue = desired;
   }
   pCharApControl->setValue(&apStateValue, 1);
-  if (bleConnected && pCharApControl->getSubscribedCount() > 0) {
-    pCharApControl->notify();
-  }
 }
 
 static void refreshModeCharacteristic() {
@@ -52,12 +52,62 @@ static void refreshModeCharacteristic() {
     modeStateValue = desired;
   }
   pCharModeControl->setValue(&modeStateValue, 1);
-  if (bleConnected && pCharModeControl->getSubscribedCount() > 0) {
-    pCharModeControl->notify();
-  }
 }
 
 static void onModeChanged(OperationMode) { refreshModeCharacteristic(); }
+
+static void refreshGpsBaudCharacteristic() {
+  setGpsBaudCharacteristicValue(getGpsSerialBaud());
+}
+
+static void setGpsBaudCharacteristicValue(uint32_t baud) {
+  if (!pCharGpsBaud)
+    return;
+
+  char buffer[12];
+  int len = snprintf(buffer, sizeof(buffer), "%lu",
+                     static_cast<unsigned long>(baud));
+  if (len <= 0)
+    return;
+
+  pCharGpsBaud->setValue(reinterpret_cast<uint8_t *>(buffer), len);
+}
+
+static bool isWhitespace(char c) {
+  return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+}
+
+static bool parseGpsBaudValue(const std::string &value, uint32_t &baudOut) {
+  if (value.empty())
+    return false;
+
+  size_t start = 0;
+  size_t end = value.size();
+
+  while (start < end && isWhitespace(value[start]))
+    ++start;
+  while (end > start && isWhitespace(value[end - 1]))
+    --end;
+
+  if (start == end)
+    return false;
+
+  uint64_t parsed = 0;
+  for (size_t i = start; i < end; ++i) {
+    char c = value[i];
+    if (c < '0' || c > '9')
+      return false;
+    parsed = parsed * 10u + static_cast<uint32_t>(c - '0');
+    if (parsed > GPS_BAUD_MAX)
+      return false;
+  }
+
+  if (parsed < GPS_BAUD_MIN)
+    return false;
+
+  baudOut = static_cast<uint32_t>(parsed);
+  return true;
+}
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server) {
@@ -76,6 +126,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     }
     refreshApControlCharacteristic();
     refreshModeCharacteristic();
+    refreshGpsBaudCharacteristic();
   }
 
   void onDisconnect(NimBLEServer *) {
@@ -116,6 +167,19 @@ class ModeControlCallbacks : public NimBLECharacteristicCallbacks {
   void onRead(NimBLECharacteristic *) { refreshModeCharacteristic(); }
 } modeControlCallbacks;
 
+class GpsBaudCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    uint32_t baud = 0;
+    if (parseGpsBaudValue(value, baud)) {
+      setGpsSerialBaud(baud);
+    }
+    refreshGpsBaudCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) { refreshGpsBaudCharacteristic(); }
+} gpsBaudCallbacks;
+
 void initBLE() {
   NimBLEDevice::init("ESP32-GPS-BLE");
   NimBLEDevice::setPower(ESP_PWR_LVL_P6);
@@ -134,19 +198,20 @@ void initBLE() {
   pCharStatus->setCallbacks(&generalChrCallbacks);
 
   pCharApControl = pService->createCharacteristic(
-      CHAR_AP_CONTROL_UUID,
-      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE |
-          NIMBLE_PROPERTY::NOTIFY);
+      CHAR_AP_CONTROL_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
   pCharApControl->setCallbacks(&apControlCallbacks);
   refreshApControlCharacteristic();
 
   pCharModeControl = pService->createCharacteristic(
-      CHAR_MODE_CONTROL_UUID,
-      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE |
-          NIMBLE_PROPERTY::NOTIFY);
+      CHAR_MODE_CONTROL_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
   pCharModeControl->setCallbacks(&modeControlCallbacks);
   registerModeChangeHandler(onModeChanged);
   refreshModeCharacteristic();
+
+  pCharGpsBaud = pService->createCharacteristic(
+      CHAR_GPS_BAUD_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  pCharGpsBaud->setCallbacks(&gpsBaudCallbacks);
+  refreshGpsBaudCharacteristic();
 
   pService->start();
 
@@ -224,10 +289,11 @@ void updateApControlCharacteristic(bool apActive) {
   apStateValue = desired;
   if (pCharApControl) {
     pCharApControl->setValue(&apStateValue, 1);
-    if (bleConnected && pCharApControl->getSubscribedCount() > 0) {
-      pCharApControl->notify();
-    }
   }
 }
 
 void updatePassthroughModeCharacteristic() { refreshModeCharacteristic(); }
+
+void updateGpsBaudCharacteristic(uint32_t baud) {
+  setGpsBaudCharacteristicValue(baud);
+}

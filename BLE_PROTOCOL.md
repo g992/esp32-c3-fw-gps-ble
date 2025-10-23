@@ -8,10 +8,12 @@
   - JSON payload `{"lt":<latitude>,"lg":<longitude>,"hd":<heading>,"spd":<m/s>,"alt":<meters>}`.
 - `3e4f5d6c-7b8a-9d0e-1f2a-3b4c5d6e7f8a` (`READ`, `NOTIFY`)
   - JSON payload `{"fix":<0|1>,"hdop":<value>,"signals":[...],"ttff":<seconds>}`.
-- `a37f8c1b-281d-4e15-8fb2-0b7e6ebd21c0` (`READ`, `WRITE`, `NOTIFY`)
-  - Value `'0'`/`'1'`; writing `'1'` schedules Wi-Fi AP start.
-- `d047f6b3-5f7c-4e5b-9c21-4c0f2b6a8f10` (`READ`, `WRITE`, `NOTIFY`)
-  - Value `'0'` keeps navigation mode; `'1'` enables serial passthrough mode.
+- `a37f8c1b-281d-4e15-8fb2-0b7e6ebd21c0` (`READ`, `WRITE`)
+  - Value `'0'`/`'1'`; writing `'1'` schedules Wi-Fi AP start. Read back to confirm current AP state.
+- `d047f6b3-5f7c-4e5b-9c21-4c0f2b6a8f10` (`READ`, `WRITE`)
+  - Value `'0'` keeps navigation mode; `'1'` enables serial passthrough mode. Read back to confirm the effective mode.
+- `f3a1a816-28f2-4b6d-9f76-6f7aa2d06123` (`READ`, `WRITE`)
+  - Decimal string for GPS UART baud (4800-921600). Writing reinitializes the GPS serial link with the requested speed and stores the value for the next boot.
 
 ## Serial Passthrough Mode
 - BLE and Wi-Fi continue running; GNSS parsing and BLE telemetry pause.

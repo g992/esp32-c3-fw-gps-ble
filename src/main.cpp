@@ -1,15 +1,21 @@
 #include "gps_ble.h"
 #include "gps_config.h"
+#include "gps_serial_control.h"
 #include "led_status.h"
 #include "logger.h"
 #include "system_mode.h"
 #include "wifi_manager.h"
 #include <Arduino.h>
+#include <Preferences.h>
 #include <iarduino_GPS_NMEA.h>
 
 HardwareSerial gpsSerial(1);
+static uint32_t gpsSerialBaud = GPS_BAUD_RATE;
+static constexpr const char *kGpsPrefsNamespace = "gpscfg";
+static constexpr const char *kGpsBaudKey = "baud";
 
 iarduino_GPS_NMEA gps;
+static bool gpsParserEnabled = false;
 
 extern NimBLEServer *pServer;
 
@@ -21,6 +27,69 @@ static int32_t ttffSeconds = -1;
 uint8_t satsInfo[32][7];
 static bool passthroughActive = false;
 
+static uint32_t loadStoredGpsBaud();
+static void persistGpsBaud(uint32_t baud);
+static void configureGpsSerial(bool enableParser, bool forceReinit);
+
+uint32_t getGpsSerialBaud() { return gpsSerialBaud; }
+
+bool setGpsSerialBaud(uint32_t baud) {
+  if (baud < GPS_BAUD_MIN || baud > GPS_BAUD_MAX)
+    return false;
+
+  if (baud == gpsSerialBaud)
+    return false;
+
+  gpsSerialBaud = baud;
+
+  configureGpsSerial(gpsParserEnabled, true);
+  logPrintf("[gps] Serial baud updated to %lu\n",
+            static_cast<unsigned long>(gpsSerialBaud));
+  updateGpsBaudCharacteristic(gpsSerialBaud);
+  persistGpsBaud(gpsSerialBaud);
+  return true;
+}
+
+static uint32_t loadStoredGpsBaud() {
+  Preferences prefs;
+  uint32_t stored = GPS_BAUD_RATE;
+  if (prefs.begin(kGpsPrefsNamespace, true)) {
+    uint32_t value = prefs.getUInt(kGpsBaudKey, stored);
+    prefs.end();
+    if (value >= GPS_BAUD_MIN && value <= GPS_BAUD_MAX) {
+      stored = value;
+    }
+  }
+  return stored;
+}
+
+static void persistGpsBaud(uint32_t baud) {
+  Preferences prefs;
+  if (prefs.begin(kGpsPrefsNamespace, false)) {
+    prefs.putUInt(kGpsBaudKey, baud);
+    prefs.end();
+  }
+}
+
+static void configureGpsSerial(bool enableParser, bool forceReinit) {
+  if (!forceReinit && gpsParserEnabled == enableParser)
+    return;
+
+  gpsSerial.flush();
+  gpsSerial.end();
+  delay(10);
+
+  gpsSerial.begin(gpsSerialBaud, SERIAL_8N1, GPS_RX, GPS_TX);
+
+  gps = iarduino_GPS_NMEA();
+  if (enableParser) {
+    gps.begin(gpsSerial, true);
+    gps.timeOut(1500);
+  }
+
+  gpsParserEnabled = enableParser;
+}
+
 static void onWifiApStateChanged(bool active) {
   updateApControlCharacteristic(active);
 }
@@ -30,6 +99,9 @@ void setup() {
   initSystemMode();
   logPrintln("[sys] Booting firmware...");
 
+  gpsSerialBaud = loadStoredGpsBaud();
+  configureGpsSerial(true, true);
+
   initBLE();
   initStatusLED();
   initWifiManager(onWifiApStateChanged);
@@ -37,11 +109,6 @@ void setup() {
 
   pinMode(GPS_EN, OUTPUT);
   digitalWrite(GPS_EN, HIGH);
-
-  gpsSerial.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX, GPS_TX);
-
-  gps.begin(gpsSerial, true);
-  gps.timeOut(1500);
 
   logPrintln("[sys] Boot complete.");
   bootMillis = millis();
@@ -54,8 +121,10 @@ void loop() {
   if (passthrough != passthroughActive) {
     passthroughActive = passthrough;
     if (passthroughActive) {
+      configureGpsSerial(false, true);
       setStatus(STATUS_READY);
     } else {
+      configureGpsSerial(true, true);
       navUpdateCounter = 0;
       firstFixCaptured = false;
       ttffSeconds = -1;

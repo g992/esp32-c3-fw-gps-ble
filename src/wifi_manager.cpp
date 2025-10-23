@@ -115,8 +115,7 @@ bool encodeStringCallback(pb_ostream_t *stream, const pb_field_t *field,
   size_t len = strlen(str);
   if (!pb_encode_tag_for_field(stream, field))
     return false;
-  return pb_encode_string(stream,
-                          reinterpret_cast<const uint8_t *>(str), len);
+  return pb_encode_string(stream, reinterpret_cast<const uint8_t *>(str), len);
 }
 
 void markPayloadDirty() {
@@ -141,13 +140,13 @@ void disconnectClient(TcpClientSlot &slot, const char *reason) {
 bool buildServerPayload(unsigned long now) {
   gnss_ServerResponse response = gnss_ServerResponse_init_zero;
 
-  bool haveFix = statusSnapshot.valid && statusSnapshot.fix && navSnapshot.valid;
+  bool haveFix =
+      statusSnapshot.valid && statusSnapshot.fix && navSnapshot.valid;
   if (haveFix) {
     response.which_response = gnss_ServerResponse_location_update_tag;
     gnss_LocationUpdate &loc = response.response.location_update;
-    loc.timestamp = navSnapshot.timestampMs != 0
-                        ? navSnapshot.timestampMs
-                        : static_cast<int64_t>(now);
+    loc.timestamp = navSnapshot.timestampMs != 0 ? navSnapshot.timestampMs
+                                                 : static_cast<int64_t>(now);
     loc.latitude = navSnapshot.latitude;
     loc.longitude = navSnapshot.longitude;
     loc.altitude = navSnapshot.altitude;
@@ -181,7 +180,8 @@ bool buildServerPayload(unsigned long now) {
     response.response.status.arg = const_cast<char *>(statusPtr);
   }
 
-  pb_ostream_t stream = pb_ostream_from_buffer(pbPayloadBuffer, sizeof(pbPayloadBuffer));
+  pb_ostream_t stream =
+      pb_ostream_from_buffer(pbPayloadBuffer, sizeof(pbPayloadBuffer));
   if (!pb_encode(&stream, gnss_ServerResponse_fields, &response)) {
     logPrintf("[wifi] Failed to encode ServerResponse: %s\n",
               PB_GET_ERROR(&stream));
@@ -298,8 +298,8 @@ void serviceTcpClients(unsigned long now) {
       continue;
     }
 
-    bool needSend = forceBroadcast ||
-                    ((now - slot.lastSend) >= kBroadcastIntervalMs);
+    bool needSend =
+        forceBroadcast || ((now - slot.lastSend) >= kBroadcastIntervalMs);
     if (!needSend) {
       continue;
     }
@@ -583,8 +583,20 @@ String floatToString(float value, uint8_t decimals = 2) {
 void sendStationPage() {
   String html;
   html.reserve(1024);
-  html += F("<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-  html += F("<title>Состояние GPS</title><style>body{font-family:Arial,sans-serif;margin:16px;background:#f4f5f7;color:#222;}h1{font-size:1.6rem;margin-bottom:12px;}h2{font-size:1.2rem;margin:0 0 8px;}section{background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08);padding:16px;margin-bottom:16px;}table{width:100%;border-collapse:collapse;}th,td{text-align:left;padding:6px 4px;}th{width:40%;color:#666;}p{margin:8px 0;}small{color:#666;}</style></head><body>");
+  html +=
+      F("<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta "
+        "name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+  html +=
+      F("<title>Состояние "
+        "GPS</"
+        "title><style>body{font-family:Arial,sans-serif;margin:16px;background:"
+        "#f4f5f7;color:#222;}h1{font-size:1.6rem;margin-bottom:12px;}h2{font-"
+        "size:1.2rem;margin:0 0 "
+        "8px;}section{background:#fff;border-radius:8px;box-shadow:0 2px 8px "
+        "rgba(0,0,0,0.08);padding:16px;margin-bottom:16px;}table{width:100%;"
+        "border-collapse:collapse;}th,td{text-align:left;padding:6px "
+        "4px;}th{width:40%;color:#666;}p{margin:8px "
+        "0;}small{color:#666;}</style></head><body>");
   html += F("<h1>GPS устройство</h1>");
 
   html += F("<section><h2>Подключение</h2>");
@@ -655,18 +667,17 @@ void sendStationPage() {
   if (mapHasPosition) {
     mapLat = floatToString(navSnapshot.latitude, 6);
     mapLon = floatToString(navSnapshot.longitude, 6);
-  } else {
-    mapLat = F("59.938784");
-    mapLon = F("30.314997");
   }
   mapLat.trim();
   mapLon.trim();
 
   html += F("<section><h2>Карта</h2>");
   if (!mapHasPosition) {
-    html += F("<p>Текущее местоположение недоступно. Показана карта по умолчанию.</p>");
+    html += F("<p>Текущее местоположение недоступно. Показана карта по "
+              "умолчанию.</p>");
   }
-  html += F("<div style=\"position:relative;overflow:hidden;\"><iframe src=\"https://yandex.ru/map-widget/v1/?ll=");
+  html += F("<div style=\"position:relative;overflow:hidden;\"><iframe "
+            "src=\"https://yandex.ru/map-widget/v1/?ll=");
   html += mapLon;
   html += F("%2C");
   html += mapLat;
@@ -679,9 +690,13 @@ void sendStationPage() {
     html += mapLat;
     html += F(",pm2rdm");
   }
-  html += F("\" width=\"560\" height=\"400\" frameborder=\"1\" allowfullscreen=\"true\" style=\"position:relative;\"></iframe></div></section>");
+  html += F("\" width=\"560\" height=\"400\" frameborder=\"1\" "
+            "allowfullscreen=\"true\" "
+            "style=\"position:relative;\"></iframe></div></section>");
 
-  html += F("<section><p>Доступ к устройству по адресу <strong>gps.local</strong>, находясь в той же сети.</p></section>");
+  html +=
+      F("<section><p>Доступ к устройству по адресу <strong>gps.local</strong>, "
+        "находясь в той же сети.</p></section>");
   html += F("</body></html>");
 
   webServer.send(200, "text/html", html);
@@ -847,7 +862,8 @@ void handleNetworks() {
 
 void handleConfigure() {
   if (!apActive) {
-    webServer.send(403, "text/plain", "Настройка доступна только в режиме точки доступа");
+    webServer.send(403, "text/plain",
+                   "Настройка доступна только в режиме точки доступа");
     return;
   }
   if (!webServer.hasArg("ssid")) {
@@ -918,8 +934,7 @@ void initWifiManager(ApStateCallback callback) {
   logPrintln("[wifi] HTTP server started on port 80");
 
   gnssTcpServer.begin();
-  logPrintf("[wifi] GNSS TCP server listening on port %u\n",
-            kGnssServerPort);
+  logPrintf("[wifi] GNSS TCP server listening on port %u\n", kGnssServerPort);
 
   loadCredentials();
   if (storedCreds.valid) {
@@ -987,8 +1002,8 @@ void updateWifiManager() {
   if (status != lastWifiStatus) {
     logPrintf("[wifi] STA status -> %s\n", wifiStatusToString(status));
     if (status == WL_CONNECTED) {
-      logPrintf("[wifi] Connected to '%s' with IP %s\n",
-                WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+      logPrintf("[wifi] Connected to '%s' with IP %s\n", WiFi.SSID().c_str(),
+                WiFi.localIP().toString().c_str());
       startMdns();
       stationConnecting = false;
     } else {
@@ -1083,8 +1098,7 @@ bool wifiManagerIsConnected() { return WiFi.status() == WL_CONNECTED; }
 bool wifiManagerHasCredentials() { return storedCreds.valid; }
 
 void wifiManagerUpdateNavSnapshot(float latitude, float longitude,
-                                  float heading, float speed,
-                                  float altitude) {
+                                  float heading, float speed, float altitude) {
   if (!gnssStreamingEnabled) {
     return;
   }
@@ -1102,8 +1116,7 @@ void wifiManagerUpdateNavSnapshot(float latitude, float longitude,
 
 void wifiManagerUpdateStatusSnapshot(uint8_t fix, float hdop,
                                      const String &signalsJson,
-                                     int32_t ttffSeconds,
-                                     uint8_t satellites) {
+                                     int32_t ttffSeconds, uint8_t satellites) {
   if (!gnssStreamingEnabled) {
     return;
   }

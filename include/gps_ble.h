@@ -13,11 +13,14 @@ static const char *CHAR_AP_CONTROL_UUID =
     "a37f8c1b-281d-4e15-8fb2-0b7e6ebd21c0";
 static const char *CHAR_MODE_CONTROL_UUID =
     "d047f6b3-5f7c-4e5b-9c21-4c0f2b6a8f10";
+static const char *CHAR_GPS_BAUD_UUID =
+    "f3a1a816-28f2-4b6d-9f76-6f7aa2d06123";
 
 extern NimBLECharacteristic *pCharNavData;
 extern NimBLECharacteristic *pCharStatus;
 extern NimBLECharacteristic *pCharApControl;
 extern NimBLECharacteristic *pCharModeControl;
+extern NimBLECharacteristic *pCharGpsBaud;
 
 extern NimBLEServer *pServer;
 
@@ -28,5 +31,6 @@ void updateSystemStatus(uint8_t fix, float hdop, uint8_t satellites,
                         const String &signalsArrayJson, int32_t ttffSeconds);
 void updateApControlCharacteristic(bool apActive);
 void updatePassthroughModeCharacteristic();
+void updateGpsBaudCharacteristic(uint32_t baud);
 
 #endif
