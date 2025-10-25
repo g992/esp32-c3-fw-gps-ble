@@ -2,34 +2,35 @@
 
 #include "logger.h"
 
-uint8_t currentStatus = STATUS_BOOTING;
-unsigned long lastBlinkTime = 0;
-bool ledState = false;
-bool ppsDetected = false;
-unsigned long bootStartTime = 0;
+StatusIndicator &statusIndicator() {
+  static StatusIndicator instance;
+  return instance;
+}
 
-uint8_t blinkPatternStep = 0;
-unsigned long patternStartTime = 0;
-
-void initStatusLED() {
+void StatusIndicator::begin() {
   pinMode(LED_STATUS_PIN, OUTPUT);
   digitalWrite(LED_STATUS_PIN, HIGH);
   pinMode(GPS_PPS, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(GPS_PPS), onPPSInterrupt, RISING);
 
   bootStartTime = millis();
-  currentStatus = STATUS_BOOTING;
+  currentStatusValue = STATUS_BOOTING;
+  lastBlinkTime = bootStartTime;
+  ledState = false;
+  ppsDetected = false;
+  patternStartTime = bootStartTime;
+  lastLedTick = 0;
+  lastPinHigh = true;
 
   logPrintln("[led] Initialising status LED (GPIO8)");
   logPrintln("[led] Mode set: boot (steady on)");
 }
 
-void setStatus(uint8_t status) {
-  if (currentStatus != status) {
-    currentStatus = status;
+void StatusIndicator::setStatus(uint8_t status) {
+  if (currentStatusValue != status) {
+    currentStatusValue = status;
     lastBlinkTime = millis();
     ledState = false;
-    blinkPatternStep = 0;
     patternStartTime = millis();
 
     switch (status) {
@@ -55,17 +56,16 @@ void setStatus(uint8_t status) {
   }
 }
 
-static inline void writeLedOn(bool on) {
-  static bool lastPinHigh = true;
+void StatusIndicator::writeLedOn(bool on) {
   bool wantPinHigh = on ? false : true;
   if (wantPinHigh != lastPinHigh) {
     digitalWrite(LED_STATUS_PIN, wantPinHigh ? HIGH : LOW);
     lastPinHigh = wantPinHigh;
   }
+  ledState = on;
 }
 
-void updateStatusLED() {
-  static unsigned long lastLedTick = 0;
+void StatusIndicator::update() {
   unsigned long now = millis();
   if (now - lastLedTick < 10) {
     return;
@@ -73,7 +73,7 @@ void updateStatusLED() {
   lastLedTick = now;
   unsigned long currentTime = now;
 
-  switch (currentStatus) {
+  switch (currentStatusValue) {
   case STATUS_BOOTING:
     writeLedOn(true);
     if (currentTime - bootStartTime >= BOOT_DURATION_MS) {
@@ -106,26 +106,24 @@ void updateStatusLED() {
     }
     break;
 
-  case STATUS_NO_MODEM:
-    {
-      unsigned long patternTime =
-          (currentTime - patternStartTime) % 2000;
+  case STATUS_NO_MODEM: {
+    unsigned long patternTime =
+        (currentTime - patternStartTime) % 2000;
 
-      if (patternTime < 200) {
-        writeLedOn(true);
-      } else if (patternTime < 400) {
-        writeLedOn(false);
-      } else if (patternTime < 600) {
-        writeLedOn(true);
-      } else if (patternTime < 800) {
-        writeLedOn(false);
-      } else if (patternTime < 1000) {
-        writeLedOn(true);
-      } else {
-        writeLedOn(false);
-      }
+    if (patternTime < 200) {
+      writeLedOn(true);
+    } else if (patternTime < 400) {
+      writeLedOn(false);
+    } else if (patternTime < 600) {
+      writeLedOn(true);
+    } else if (patternTime < 800) {
+      writeLedOn(false);
+    } else if (patternTime < 1000) {
+      writeLedOn(true);
+    } else {
+      writeLedOn(false);
     }
-    break;
+  } break;
 
   case STATUS_READY:
     writeLedOn(false);
@@ -133,4 +131,16 @@ void updateStatusLED() {
   }
 }
 
-void IRAM_ATTR onPPSInterrupt() { ppsDetected = true; }
+void StatusIndicator::onPpsPulse() { ppsDetected = true; }
+
+uint8_t StatusIndicator::status() const { return currentStatusValue; }
+
+void initStatusLED() { statusIndicator().begin(); }
+
+void setStatus(uint8_t status) { statusIndicator().setStatus(status); }
+
+void updateStatusLED() { statusIndicator().update(); }
+
+uint8_t getStatusIndicatorState() { return statusIndicator().status(); }
+
+void IRAM_ATTR onPPSInterrupt() { statusIndicator().onPpsPulse(); }

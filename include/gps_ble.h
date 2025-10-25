@@ -2,6 +2,7 @@
 #define GPS_BLE_H
 
 #include <Arduino.h>
+#include "data_channel.h"
 #include <NimBLECharacteristic.h>
 #include <NimBLEDevice.h>
 #include <NimBLEServer.h>
@@ -15,6 +16,8 @@ static const char *CHAR_MODE_CONTROL_UUID =
     "d047f6b3-5f7c-4e5b-9c21-4c0f2b6a8f10";
 static const char *CHAR_GPS_BAUD_UUID =
     "f3a1a816-28f2-4b6d-9f76-6f7aa2d06123";
+static const char *CHAR_KEEPALIVE_UUID =
+    "6b5d5304-4523-4db4-9a31-0f3d88c2ce11";
 
 extern NimBLECharacteristic *pCharNavData;
 extern NimBLECharacteristic *pCharStatus;
@@ -25,12 +28,14 @@ extern NimBLECharacteristic *pCharGpsBaud;
 extern NimBLEServer *pServer;
 
 void initBLE();
-void updateNavData(float lat, float lon, float heading, float speed,
-                   float altitude);
-void updateSystemStatus(uint8_t fix, float hdop, uint8_t satellites,
-                        const String &signalsArrayJson, int32_t ttffSeconds);
 void updateApControlCharacteristic(bool apActive);
 void updatePassthroughModeCharacteristic();
 void updateGpsBaudCharacteristic(uint32_t baud);
+
+NavDataPublisher *bleNavPublisher();
+SystemStatusPublisher *bleStatusPublisher();
+bool bleHasActiveConnection();
+void bleTick();
+int bleGapEventHandler(ble_gap_event *event, void *arg);
 
 #endif

@@ -1,24 +1,57 @@
-#include <Preferences.h>
-
-#include "system_mode.h"
+#include "system_mode_service.h"
 #include "gps_config.h"
-
+#include "system_mode.h"
 #include "wifi_manager.h"
 
-namespace {
+#include <Arduino.h>
 
-OperationMode currentMode = OperationMode::Navigation;
-bool logsEnabled = true;
+SystemModeService &systemModeService() {
+  static SystemModeService instance;
+  return instance;
+}
 
-constexpr size_t kMaxHandlers = 4;
-ModeChangeHandler handlers[kMaxHandlers];
-size_t handlerCount = 0;
+void SystemModeService::begin() {
+  handlerCount = 0;
+  logsEnabledFlag = true;
+  currentMode = readStoredMode();
+  applyMode(currentMode);
+}
 
-Preferences modePrefs;
-constexpr const char *kPrefsNamespace = "sysmode";
-constexpr const char *kModeKey = "mode";
+bool SystemModeService::setMode(OperationMode mode) {
+  if (mode == currentMode) {
+    return false;
+  }
+  currentMode = mode;
+  persistMode(mode);
+  applyMode(mode);
+  resetGpsModem();
+  notifyHandlers(mode);
+  return true;
+}
 
-OperationMode readStoredMode() {
+OperationMode SystemModeService::mode() const { return currentMode; }
+
+bool SystemModeService::isPassthrough() const {
+  return currentMode == OperationMode::SerialPassthrough;
+}
+
+bool SystemModeService::logsEnabled() const { return logsEnabledFlag; }
+
+void SystemModeService::subscribe(ModeChangeHandler handler) {
+  if (!handler) {
+    return;
+  }
+  for (size_t i = 0; i < handlerCount; ++i) {
+    if (handlers[i] == handler) {
+      return;
+    }
+  }
+  if (handlerCount < kMaxHandlers) {
+    handlers[handlerCount++] = handler;
+  }
+}
+
+OperationMode SystemModeService::readStoredMode() {
   OperationMode stored = OperationMode::Navigation;
   if (modePrefs.begin(kPrefsNamespace, true)) {
     uint8_t value =
@@ -31,21 +64,21 @@ OperationMode readStoredMode() {
   return stored;
 }
 
-void persistMode(OperationMode mode) {
+void SystemModeService::persistMode(OperationMode mode) {
   if (modePrefs.begin(kPrefsNamespace, false)) {
     modePrefs.putUChar(kModeKey, static_cast<uint8_t>(mode));
     modePrefs.end();
   }
 }
 
-void resetGpsModem() {
+void SystemModeService::resetGpsModem() {
   pinMode(GPS_EN, OUTPUT);
   digitalWrite(GPS_EN, LOW);
   delay(100);
   digitalWrite(GPS_EN, HIGH);
 }
 
-void notifyHandlers(OperationMode mode) {
+void SystemModeService::notifyHandlers(OperationMode mode) {
   for (size_t i = 0; i < handlerCount; ++i) {
     if (handlers[i]) {
       handlers[i](mode);
@@ -53,51 +86,26 @@ void notifyHandlers(OperationMode mode) {
   }
 }
 
-void applyMode(OperationMode mode) {
+void SystemModeService::applyMode(OperationMode mode) {
   bool passthrough = (mode == OperationMode::SerialPassthrough);
-  logsEnabled = !passthrough;
+  logsEnabledFlag = !passthrough;
   wifiManagerSetGnssStreamingEnabled(!passthrough);
 }
 
-} // namespace
-
-void initSystemMode() {
-  handlerCount = 0;
-  logsEnabled = true;
-  currentMode = readStoredMode();
-  applyMode(currentMode);
-}
+void initSystemMode() { systemModeService().begin(); }
 
 bool setOperationMode(OperationMode mode) {
-  if (mode == currentMode) {
-    return false;
-  }
-  currentMode = mode;
-  persistMode(mode);
-  applyMode(mode);
-  resetGpsModem();
-  notifyHandlers(mode);
-  return true;
+  return systemModeService().setMode(mode);
 }
 
-OperationMode getOperationMode() { return currentMode; }
+OperationMode getOperationMode() { return systemModeService().mode(); }
 
 bool isSerialPassthroughMode() {
-  return currentMode == OperationMode::SerialPassthrough;
+  return systemModeService().isPassthrough();
 }
 
-bool systemLogsEnabled() { return logsEnabled; }
+bool systemLogsEnabled() { return systemModeService().logsEnabled(); }
 
 void registerModeChangeHandler(ModeChangeHandler handler) {
-  if (!handler) {
-    return;
-  }
-  for (size_t i = 0; i < handlerCount; ++i) {
-    if (handlers[i] == handler) {
-      return;
-    }
-  }
-  if (handlerCount < kMaxHandlers) {
-    handlers[handlerCount++] = handler;
-  }
+  systemModeService().subscribe(handler);
 }

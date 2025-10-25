@@ -1,32 +1,49 @@
 #include "gps_ble.h"
+#include "data_channel.h"
+#include "firmware_app.h"
 #include "gps_serial_control.h"
+#include "logger.h"
 #include "system_mode.h"
 #include "wifi_manager.h"
+#include <Arduino.h>
 
 NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
 NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
 NimBLECharacteristic *pCharGpsBaud = nullptr;
+NimBLECharacteristic *pCharKeepAlive = nullptr;
 
 NimBLEServer *pServer = nullptr;
 
 static bool bleConnected = false;
+static uint16_t currentConnHandle = 0xFFFF;
+static unsigned long lastKeepAliveMillis = 0;
+static constexpr unsigned long kKeepAliveTimeoutMs = 10000;
 
 static constexpr float kLatLonEps = 1e-5f;
 static constexpr float kHeadingEps = 1.0f;
 static constexpr float kSpeedEps = 0.2f;
 static constexpr float kAltEps = 0.5f;
 
-static float lastLat = 0.0f;
-static float lastLon = 0.0f;
-static float lastHeading = 0.0f;
-static float lastSpeed = 0.0f;
-static float lastAlt = 0.0f;
-static bool haveLastNav = false;
-
 static uint8_t apStateValue = '0';
 static uint8_t modeStateValue = '0';
+
+class BleDataPublisher : public NavDataPublisher, public SystemStatusPublisher {
+public:
+  void publishNavData(const NavDataSample &sample) override;
+  void publishSystemStatus(const SystemStatusSample &sample) override;
+
+private:
+  float lastLat = 0.0f;
+  float lastLon = 0.0f;
+  float lastHeading = 0.0f;
+  float lastSpeed = 0.0f;
+  float lastAlt = 0.0f;
+  bool haveLastNav = false;
+};
+
+static BleDataPublisher gBlePublisher;
 
 static void setGpsBaudCharacteristicValue(uint32_t baud);
 
@@ -65,8 +82,8 @@ static void setGpsBaudCharacteristicValue(uint32_t baud) {
     return;
 
   char buffer[12];
-  int len = snprintf(buffer, sizeof(buffer), "%lu",
-                     static_cast<unsigned long>(baud));
+  int len =
+      snprintf(buffer, sizeof(buffer), "%lu", static_cast<unsigned long>(baud));
   if (len <= 0)
     return;
 
@@ -110,9 +127,21 @@ static bool parseGpsBaudValue(const std::string &value, uint32_t &baudOut) {
 }
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *server) {
-    server->updateConnParams(0, 24, 48, 0, 400);
+  void onConnect(NimBLEServer *server, ble_gap_conn_desc *desc) override {
+    logPrintln("[ble] Client connected");
+    uint16_t handle = desc ? desc->conn_handle : 0;
+    if (handle != 0) {
+      server->updateConnParams(handle, 24, 48, 0, 400);
+    }
+    if (handle == 0) {
+      auto peers = server->getPeerDevices();
+      if (!peers.empty()) {
+        handle = peers.front();
+      }
+    }
     bleConnected = true;
+    currentConnHandle = (handle != 0) ? handle : 0xFFFF;
+    lastKeepAliveMillis = millis();
     if (pCharStatus) {
       char buf[80];
       int len =
@@ -129,9 +158,21 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     refreshGpsBaudCharacteristic();
   }
 
-  void onDisconnect(NimBLEServer *) {
+  void onConnect(NimBLEServer *server) override { onConnect(server, nullptr); }
+
+  void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc) override {
+    Serial.println("[ble] Client disconnected");
+    logPrintln("[ble] Client disconnected");
     bleConnected = false;
-    NimBLEDevice::startAdvertising();
+    currentConnHandle = 0xFFFF;
+    lastKeepAliveMillis = 0;
+    if (pServer) {
+      pServer->startAdvertising();
+    }
+  }
+
+  void onDisconnect(NimBLEServer *pServer) override {
+    onDisconnect(pServer, nullptr);
   }
 
 } serverCallbacks;
@@ -148,18 +189,15 @@ class ApControlCallbacks : public NimBLECharacteristicCallbacks {
     refreshApControlCharacteristic();
   }
 
-  void onRead(NimBLECharacteristic *) {
-    refreshApControlCharacteristic();
-  }
+  void onRead(NimBLECharacteristic *) { refreshApControlCharacteristic(); }
 } apControlCallbacks;
 
 class ModeControlCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *characteristic) {
     const std::string &value = characteristic->getValue();
     bool enablePassthrough = !value.empty() && (value[0] == '1');
-    OperationMode desired = enablePassthrough
-                                ? OperationMode::SerialPassthrough
-                                : OperationMode::Navigation;
+    OperationMode desired = enablePassthrough ? OperationMode::SerialPassthrough
+                                              : OperationMode::Navigation;
     setOperationMode(desired);
     refreshModeCharacteristic();
   }
@@ -180,9 +218,36 @@ class GpsBaudCallbacks : public NimBLECharacteristicCallbacks {
   void onRead(NimBLECharacteristic *) { refreshGpsBaudCharacteristic(); }
 } gpsBaudCallbacks;
 
+class KeepAliveCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    (void)characteristic;
+    lastKeepAliveMillis = millis();
+  }
+} keepAliveCallbacks;
+
+int bleGapEventHandler(ble_gap_event *event, void *arg) {
+  (void)arg;
+  if (!event)
+    return 0;
+
+  switch (event->type) {
+  case BLE_GAP_EVENT_DISCONNECT:
+    lastKeepAliveMillis = 0;
+    break;
+
+  default:
+    lastKeepAliveMillis = millis();
+    break;
+  }
+  return 0;
+}
+
 void initBLE() {
   NimBLEDevice::init("ESP32-GPS-BLE");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P6);
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEDevice::setSecurityAuth(false, false, false);
+  NimBLEDevice::setCustomGapHandler(bleGapEventHandler);
+  NimBLEDevice::setCustomGapHandler(bleGapEventHandler);
 
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(&serverCallbacks);
@@ -213,6 +278,10 @@ void initBLE() {
   pCharGpsBaud->setCallbacks(&gpsBaudCallbacks);
   refreshGpsBaudCharacteristic();
 
+  pCharKeepAlive = pService->createCharacteristic(CHAR_KEEPALIVE_UUID,
+                                                  NIMBLE_PROPERTY::WRITE);
+  pCharKeepAlive->setCallbacks(&keepAliveCallbacks);
+
   pService->start();
 
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
@@ -231,25 +300,23 @@ static inline bool diffExceeds(float a, float b, float eps) {
   return d > eps;
 }
 
-void updateNavData(float lat, float lon, float heading, float speed,
-                   float altitude) {
-  bool needSend = !haveLastNav || diffExceeds(lat, lastLat, kLatLonEps) ||
-                  diffExceeds(lon, lastLon, kLatLonEps) ||
-                  diffExceeds(heading, lastHeading, kHeadingEps) ||
-                  diffExceeds(speed, lastSpeed, kSpeedEps) ||
-                  diffExceeds(altitude, lastAlt, kAltEps);
+void BleDataPublisher::publishNavData(const NavDataSample &sample) {
+  bool needSend = !haveLastNav ||
+                  diffExceeds(sample.latitude, lastLat, kLatLonEps) ||
+                  diffExceeds(sample.longitude, lastLon, kLatLonEps) ||
+                  diffExceeds(sample.heading, lastHeading, kHeadingEps) ||
+                  diffExceeds(sample.speed, lastSpeed, kSpeedEps) ||
+                  diffExceeds(sample.altitude, lastAlt, kAltEps);
 
   if (!needSend)
     return;
 
-  lastLat = lat;
-  lastLon = lon;
-  lastHeading = heading;
-  lastSpeed = speed;
-  lastAlt = altitude;
+  lastLat = sample.latitude;
+  lastLon = sample.longitude;
+  lastHeading = sample.heading;
+  lastSpeed = sample.speed;
+  lastAlt = sample.altitude;
   haveLastNav = true;
-
-  wifiManagerUpdateNavSnapshot(lat, lon, heading, speed, altitude);
 
   if (!pCharNavData || !bleConnected)
     return;
@@ -257,27 +324,25 @@ void updateNavData(float lat, float lon, float heading, float speed,
   char json[112];
   int len = snprintf(
       json, sizeof(json),
-      "{\"lt\":%.6f,\"lg\":%.6f,\"hd\":%.1f,\"spd\":%.1f,\"alt\":%.1f}", lat,
-      lon, heading, speed, altitude);
+      "{\"lt\":%.6f,\"lg\":%.6f,\"hd\":%.1f,\"spd\":%.1f,\"alt\":%.1f}",
+      sample.latitude, sample.longitude, sample.heading, sample.speed,
+      sample.altitude);
   if (len <= 0)
     return;
   pCharNavData->setValue((uint8_t *)json, len);
   pCharNavData->notify();
 }
 
-void updateSystemStatus(uint8_t fix, float hdop, uint8_t satellites,
-                        const String &signalsArrayJson, int32_t ttffSeconds) {
-  wifiManagerUpdateStatusSnapshot(fix, hdop, signalsArrayJson, ttffSeconds,
-                                  satellites);
-
+void BleDataPublisher::publishSystemStatus(const SystemStatusSample &sample) {
   if (!pCharStatus || !bleConnected)
     return;
 
   char json[112];
-  int len =
-      snprintf(json, sizeof(json),
-               "{\"fix\":%u,\"hdop\":%.1f,\"signals\":%s,\"ttff\":%d}",
-               (unsigned)fix, hdop, signalsArrayJson.c_str(), (int)ttffSeconds);
+  int len = snprintf(json, sizeof(json),
+                     "{\"fix\":%u,\"hdop\":%.1f,\"signals\":%s,\"ttff\":%d}",
+                     static_cast<unsigned>(sample.fix), sample.hdop,
+                     sample.signalsJson.c_str(),
+                     static_cast<int>(sample.ttffSeconds));
   if (len <= 0)
     return;
   pCharStatus->setValue((uint8_t *)json, len);
@@ -296,4 +361,36 @@ void updatePassthroughModeCharacteristic() { refreshModeCharacteristic(); }
 
 void updateGpsBaudCharacteristic(uint32_t baud) {
   setGpsBaudCharacteristicValue(baud);
+}
+
+NavDataPublisher *bleNavPublisher() { return &gBlePublisher; }
+
+SystemStatusPublisher *bleStatusPublisher() { return &gBlePublisher; }
+
+bool bleHasActiveConnection() {
+  if (pServer && pServer->getConnectedCount() > 0)
+    return true;
+  return bleConnected;
+}
+
+void bleTick() {
+  if (!bleConnected)
+    return;
+  if (currentConnHandle == 0xFFFF)
+    return;
+
+  unsigned long now = millis();
+  if (lastKeepAliveMillis != 0 &&
+      now - lastKeepAliveMillis <= kKeepAliveTimeoutMs)
+    return;
+
+  Serial.println("[ble] Keepalive timeout, disconnecting client");
+  logPrintln("[ble] Keepalive timeout, disconnecting client");
+  if (pServer) {
+    pServer->disconnect(currentConnHandle);
+    pServer->startAdvertising();
+  }
+  bleConnected = false;
+  currentConnHandle = 0xFFFF;
+  lastKeepAliveMillis = 0;
 }

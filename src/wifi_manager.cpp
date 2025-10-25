@@ -81,6 +81,15 @@ struct StatusSnapshot {
 NavSnapshot navSnapshot;
 StatusSnapshot statusSnapshot;
 
+class WifiManagerPublisher : public NavDataPublisher,
+                             public SystemStatusPublisher {
+public:
+  void publishNavData(const NavDataSample &sample) override;
+  void publishSystemStatus(const SystemStatusSample &sample) override;
+};
+
+static WifiManagerPublisher gWifiPublisher;
+
 constexpr uint16_t kGnssServerPort = 8887;
 constexpr size_t kMaxTcpClients = 4;
 constexpr unsigned long kHeartbeatTimeoutMs = 4000;
@@ -1097,35 +1106,33 @@ bool wifiManagerIsConnected() { return WiFi.status() == WL_CONNECTED; }
 
 bool wifiManagerHasCredentials() { return storedCreds.valid; }
 
-void wifiManagerUpdateNavSnapshot(float latitude, float longitude,
-                                  float heading, float speed, float altitude) {
+void WifiManagerPublisher::publishNavData(const NavDataSample &sample) {
   if (!gnssStreamingEnabled) {
     return;
   }
   navSnapshot.valid = true;
-  navSnapshot.latitude = latitude;
-  navSnapshot.longitude = longitude;
-  navSnapshot.heading = heading;
-  navSnapshot.speed = speed;
-  navSnapshot.altitude = altitude;
+  navSnapshot.latitude = sample.latitude;
+  navSnapshot.longitude = sample.longitude;
+  navSnapshot.heading = sample.heading;
+  navSnapshot.speed = sample.speed;
+  navSnapshot.altitude = sample.altitude;
   unsigned long now = millis();
   navSnapshot.updatedAt = now;
   navSnapshot.timestampMs = static_cast<int64_t>(now);
   markPayloadDirty();
 }
 
-void wifiManagerUpdateStatusSnapshot(uint8_t fix, float hdop,
-                                     const String &signalsJson,
-                                     int32_t ttffSeconds, uint8_t satellites) {
+void WifiManagerPublisher::publishSystemStatus(
+    const SystemStatusSample &sample) {
   if (!gnssStreamingEnabled) {
     return;
   }
   statusSnapshot.valid = true;
-  statusSnapshot.fix = fix != 0;
-  statusSnapshot.hdop = hdop;
-  statusSnapshot.signals = signalsJson;
-  statusSnapshot.ttffSeconds = ttffSeconds;
-  statusSnapshot.satellites = satellites;
+  statusSnapshot.fix = sample.fix != 0;
+  statusSnapshot.hdop = sample.hdop;
+  statusSnapshot.signals = sample.signalsJson;
+  statusSnapshot.ttffSeconds = sample.ttffSeconds;
+  statusSnapshot.satellites = sample.satellites;
   statusSnapshot.updatedAt = millis();
   markPayloadDirty();
 }
@@ -1144,4 +1151,10 @@ void wifiManagerSetGnssStreamingEnabled(bool enabled) {
   } else {
     markPayloadDirty();
   }
+}
+
+NavDataPublisher *wifiManagerNavPublisher() { return &gWifiPublisher; }
+
+SystemStatusPublisher *wifiManagerStatusPublisher() {
+  return &gWifiPublisher;
 }

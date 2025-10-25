@@ -4,11 +4,7 @@
 #include "gps_config.h"
 #include <Arduino.h>
 
-// Переменные для управления светодиодом
-extern uint8_t currentStatus;
-extern unsigned long lastBlinkTime;
-extern bool ledState;
-extern bool ppsDetected;
+#include "status_indicator.h"
 
 /**
  * Инициализация светодиода статуса
@@ -25,6 +21,11 @@ void setStatus(uint8_t status);
  * Обновление индикации (вызывать в основном цикле)
  */
 void updateStatusLED();
+
+/**
+ * Текущий статус индикации.
+ */
+uint8_t getStatusIndicatorState();
 
 /**
  * Обработчик прерывания PPS

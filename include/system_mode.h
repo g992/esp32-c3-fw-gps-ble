@@ -17,4 +17,7 @@ bool isSerialPassthroughMode();
 bool systemLogsEnabled();
 void registerModeChangeHandler(ModeChangeHandler handler);
 
+class SystemModeService;
+SystemModeService &systemModeService();
+
 #endif
