@@ -25,3 +25,27 @@
 - GPS UART stream is forwarded verbatim to the USB serial port; host bytes are relayed back to the GPS module.
 - System logs are suppressed to keep UART output clean.
 - Navigation/status characteristics remain static until the mode is disabled; keepalive writes are still required to stay connected.
+
+## OTA Update Service
+- UUID: `c7b44a0c-24c6-4af3-97ec-19ff34d45095` (advertised alongside the primary service)
+- Clients must keep the navigation service connected to retain the link while streaming updates.
+
+### Characteristics
+- `0f6f8ff7-1b61-4d44-9f31-3536c3a601a7` (`READ`, `WRITE`, `WRITE_NR`) — control plane
+  - Text payload with semicolon-separated key/value pairs. Required flow:
+    - `CMD=START;SIZE=<bytes>[;SHA256=<64 hex>][;CRC32=<hex>]`
+    - `CMD=FINISH` after all chunks are delivered.
+    - `CMD=ABORT` cancels the active session.
+  - `SIZE` must not exceed the `app1` partition. SHA256/CRC32 are optional but strongly recommended.
+- `cb08c9fd-6c57-4b51-8bbe-20f3214bf3e9` (`WRITE_NR`) — data plane
+  - Each write begins with a 32-bit little-endian image offset followed by raw firmware bytes (max 512 B per packet).
+  - Offsets must be contiguous; mismatches abort the session.
+- `d19d3c86-9ba9-4a52-9244-99118bd88d08` (`READ`, `NOTIFY`) — status
+  - JSON updates such as `{"state":"idle"}`, `{"state":"receiving","received":4096,"total":65536}`,
+    `{"state":"error","message":"sha_mismatch"}`, and `{"state":"ready","message":"rebooting"}`.
+  - The device aborts on disconnect, offset errors, checksum failures, or OTA API errors.
+
+### Boot Behavior
+- Firmware images stream into the `ota_1` (app1) slot; the factory `ota_0` image remains untouched for rollback.
+- After `FINISH`, the device re-reads the written partition, validates SHA256/CRC32 (when supplied), switches the boot slot, and schedules a restart.
+- The freshly booted image must call `esp_ota_mark_app_valid_cancel_rollback()` once self-tests pass; otherwise the bootloader automatically reverts to the factory slot.
