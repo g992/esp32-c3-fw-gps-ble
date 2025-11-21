@@ -18,6 +18,8 @@ struct GpsRuntimeState {
   int32_t ttffSeconds = -1;
   bool firstFixCaptured = false;
   bool passthroughActive = false;
+  bool ubxLinkOk = false;
+  bool ubxConfigured = false;
 };
 
 #endif

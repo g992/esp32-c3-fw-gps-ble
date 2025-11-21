@@ -6,6 +6,7 @@
 #include "led_status.h"
 #include "logger.h"
 #include "system_mode.h"
+#include "ubx_command_set.h"
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -16,6 +17,379 @@ HardwareSerial gpsSerial(1);
 iarduino_GPS_NMEA gpsParser;
 constexpr const char *kGpsPrefsNamespace = "gpscfg";
 constexpr const char *kGpsBaudKey = "baud";
+constexpr const char *kGpsProfileKey = "profile";
+constexpr UbxConfigProfile kDefaultUbxProfile =
+    UbxConfigProfile::FullSystems;
+constexpr size_t kUbxPayloadBufferSize = 196;
+constexpr uint32_t kUbxAckTimeoutMs = 600;
+constexpr uint32_t kUbxResponseTimeoutMs = 1200;
+constexpr uint32_t kUbxInterCommandDelayMs = 30;
+constexpr uint32_t kUbxDrainWindowMs = 50;
+constexpr uint32_t kUbxStartupDelayMs = 250;
+constexpr uint8_t kUbxValgetLayerRam = 0;
+constexpr uint32_t kUbxKeyMask = 0xFFFFFFF8u;
+
+struct UbxFrame {
+  uint8_t msgClass = 0;
+  uint8_t msgId = 0;
+  uint16_t payloadSize = 0;
+  uint16_t payloadStored = 0;
+  uint8_t payload[kUbxPayloadBufferSize] = {};
+};
+
+bool waitForSpecificFrame(uint8_t desiredClass, uint8_t desiredId,
+                          UbxFrame &frame, uint32_t timeoutMs);
+
+void logUbxFrame(const char *label, const UbxFrame &frame) {
+  const char *tag = label ? label : "UBX";
+  logPrintf("[gps] %s: class=0x%02X id=0x%02X len=%u\n", tag, frame.msgClass,
+            frame.msgId, static_cast<unsigned>(frame.payloadSize));
+  if (!frame.payloadStored)
+    return;
+  constexpr size_t kMaxDump = 32;
+  size_t dump = frame.payloadStored < kMaxDump ? frame.payloadStored : kMaxDump;
+  char hexBuf[kMaxDump * 3 + 4];
+  size_t pos = 0;
+  for (size_t i = 0; i < dump && pos + 4 < sizeof(hexBuf); ++i) {
+    int written = snprintf(&hexBuf[pos], sizeof(hexBuf) - pos, "%02X ",
+                           frame.payload[i]);
+    if (written <= 0)
+      break;
+    pos += static_cast<size_t>(written);
+  }
+  if (pos < sizeof(hexBuf)) {
+    hexBuf[pos] = '\0';
+  } else {
+    hexBuf[sizeof(hexBuf) - 1] = '\0';
+  }
+  logPrintf("[gps] %s payload: %s%s\n", tag, hexBuf,
+            (frame.payloadStored > dump) ? "..." : "");
+}
+
+bool sendUbxMessage(uint8_t msgClass, uint8_t msgId, const uint8_t *payload,
+                    size_t payloadSize) {
+  if (!payload && payloadSize > 0) {
+    return false;
+  }
+  size_t bytesWritten = 0;
+  bytesWritten += gpsSerial.write(0xB5);
+  bytesWritten += gpsSerial.write(0x62);
+
+  uint8_t lenLow = static_cast<uint8_t>(payloadSize & 0xFFu);
+  uint8_t lenHigh = static_cast<uint8_t>((payloadSize >> 8) & 0xFFu);
+
+  auto updateChecksum = [](uint8_t byte, uint8_t &ckA,
+                           uint8_t &ckB) {
+    ckA = static_cast<uint8_t>(ckA + byte);
+    ckB = static_cast<uint8_t>(ckB + ckA);
+  };
+
+  uint8_t ckA = 0;
+  uint8_t ckB = 0;
+
+  bytesWritten += gpsSerial.write(msgClass);
+  updateChecksum(msgClass, ckA, ckB);
+
+  bytesWritten += gpsSerial.write(msgId);
+  updateChecksum(msgId, ckA, ckB);
+
+  bytesWritten += gpsSerial.write(lenLow);
+  updateChecksum(lenLow, ckA, ckB);
+
+  bytesWritten += gpsSerial.write(lenHigh);
+  updateChecksum(lenHigh, ckA, ckB);
+
+  for (size_t i = 0; i < payloadSize; ++i) {
+    bytesWritten += gpsSerial.write(payload[i]);
+    updateChecksum(payload[i], ckA, ckB);
+  }
+
+  bytesWritten += gpsSerial.write(ckA);
+  bytesWritten += gpsSerial.write(ckB);
+  gpsSerial.flush();
+
+  size_t expected = 2 + 4 + payloadSize + 2;
+  return bytesWritten == expected;
+}
+
+bool requestUbxConfigValue(uint32_t key, uint8_t &valueOut, uint8_t layer) {
+  uint8_t payload[8];
+  payload[0] = 0; // version
+  payload[1] = layer;
+  payload[2] = 0;
+  payload[3] = 0;
+  uint32_t maskedKey = key;
+  payload[4] = static_cast<uint8_t>(maskedKey & 0xFFu);
+  payload[5] = static_cast<uint8_t>((maskedKey >> 8) & 0xFFu);
+  payload[6] = static_cast<uint8_t>((maskedKey >> 16) & 0xFFu);
+  payload[7] = static_cast<uint8_t>((maskedKey >> 24) & 0xFFu);
+  if (!sendUbxMessage(0x06, 0x8B, payload, sizeof(payload))) {
+    return false;
+  }
+
+  UbxFrame frame;
+  if (!waitForSpecificFrame(0x06, 0x8B, frame, kUbxResponseTimeoutMs)) {
+    return false;
+  }
+  logUbxFrame("UBX VALGET", frame);
+  if (frame.payloadStored < 9) {
+    return false;
+  }
+
+  uint32_t responseKey = static_cast<uint32_t>(frame.payload[4]) |
+                         (static_cast<uint32_t>(frame.payload[5]) << 8) |
+                         (static_cast<uint32_t>(frame.payload[6]) << 16) |
+                         (static_cast<uint32_t>(frame.payload[7]) << 24);
+  if ((responseKey & kUbxKeyMask) != (maskedKey & kUbxKeyMask)) {
+    return false;
+  }
+  valueOut = frame.payload[8];
+  return true;
+}
+
+void drainGpsSerialInput() {
+  unsigned long start = millis();
+  while (millis() - start < kUbxDrainWindowMs) {
+    while (gpsSerial.available() > 0) {
+      gpsSerial.read();
+      start = millis();
+    }
+    delay(1);
+  }
+}
+
+bool sendUbxCommand(const UbxBinaryCommand &command) {
+  if (!command.data || command.size < 8) {
+    logPrintln("[gps] UBX command is not valid, skipping");
+    return false;
+  }
+  size_t written = gpsSerial.write(command.data, command.size);
+  gpsSerial.flush();
+  return written == command.size;
+}
+
+bool readUbxFrame(UbxFrame &frame, uint32_t timeoutMs) {
+  enum class ParserState {
+    Sync1,
+    Sync2,
+    Class,
+    Id,
+    Len1,
+    Len2,
+    Payload,
+    CkA,
+    CkB
+  };
+  ParserState state = ParserState::Sync1;
+  uint8_t ckA = 0;
+  uint8_t ckB = 0;
+  uint16_t payloadLen = 0;
+  uint16_t payloadRead = 0;
+  frame.payloadStored = 0;
+  unsigned long start = millis();
+
+  while (millis() - start < timeoutMs) {
+    if (gpsSerial.available() == 0) {
+      delay(1);
+      continue;
+    }
+    uint8_t value = static_cast<uint8_t>(gpsSerial.read());
+    switch (state) {
+    case ParserState::Sync1:
+      if (value == 0xB5) {
+        state = ParserState::Sync2;
+      }
+      break;
+    case ParserState::Sync2:
+      if (value == 0x62) {
+        state = ParserState::Class;
+      } else {
+        state = ParserState::Sync1;
+      }
+      break;
+    case ParserState::Class:
+      frame.msgClass = value;
+      ckA = value;
+      ckB = ckA;
+      state = ParserState::Id;
+      break;
+    case ParserState::Id:
+      frame.msgId = value;
+      ckA += value;
+      ckB += ckA;
+      state = ParserState::Len1;
+      break;
+    case ParserState::Len1:
+      payloadLen = value;
+      ckA += value;
+      ckB += ckA;
+      state = ParserState::Len2;
+      break;
+    case ParserState::Len2:
+      payloadLen |= static_cast<uint16_t>(value) << 8;
+      frame.payloadSize = payloadLen;
+      ckA += value;
+      ckB += ckA;
+      payloadRead = 0;
+      frame.payloadStored = 0;
+      state = (payloadLen == 0) ? ParserState::CkA : ParserState::Payload;
+      break;
+    case ParserState::Payload:
+      if (payloadRead < kUbxPayloadBufferSize) {
+        frame.payload[payloadRead] = value;
+        frame.payloadStored = payloadRead + 1;
+      }
+      payloadRead++;
+      ckA += value;
+      ckB += ckA;
+      if (payloadRead >= payloadLen) {
+        state = ParserState::CkA;
+      }
+      break;
+    case ParserState::CkA:
+      if (value != ckA) {
+        state = ParserState::Sync1;
+        ckA = ckB = 0;
+        payloadLen = payloadRead = 0;
+      } else {
+        state = ParserState::CkB;
+      }
+      break;
+    case ParserState::CkB:
+      if (value != ckB) {
+        state = ParserState::Sync1;
+        ckA = ckB = 0;
+        payloadLen = payloadRead = 0;
+      } else {
+        return true;
+      }
+      break;
+    }
+  }
+  return false;
+}
+
+bool waitForSpecificFrame(uint8_t desiredClass, uint8_t desiredId,
+                          UbxFrame &frame, uint32_t timeoutMs) {
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
+    uint32_t elapsed = millis() - start;
+    uint32_t remaining = (elapsed >= timeoutMs) ? 0 : (timeoutMs - elapsed);
+    if (remaining == 0) {
+      remaining = 1;
+    }
+    if (!readUbxFrame(frame, remaining)) {
+      return false;
+    }
+    if (frame.msgClass == desiredClass && frame.msgId == desiredId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool waitForUbxAck(uint8_t msgClass, uint8_t msgId, uint32_t timeoutMs) {
+  UbxFrame frame;
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
+    uint32_t elapsed = millis() - start;
+    uint32_t remaining = (elapsed >= timeoutMs) ? 0 : (timeoutMs - elapsed);
+    if (remaining == 0) {
+      remaining = 1;
+    }
+    if (!readUbxFrame(frame, remaining)) {
+      return false;
+    }
+    if (frame.msgClass == 0x05 && frame.msgId == 0x01 &&
+        frame.payloadStored >= 2) {
+      if (frame.payload[0] == msgClass && frame.payload[1] == msgId) {
+        return true;
+      }
+    }
+    if (frame.msgClass == 0x05 && frame.msgId == 0x00 &&
+        frame.payloadStored >= 2) {
+      if (frame.payload[0] == msgClass && frame.payload[1] == msgId) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+bool sendUbxCommandExpectAck(const UbxBinaryCommand &command) {
+  if (!sendUbxCommand(command)) {
+    return false;
+  }
+  uint8_t msgClass = command.data[2];
+  uint8_t msgId = command.data[3];
+  return waitForUbxAck(msgClass, msgId, kUbxAckTimeoutMs);
+}
+
+bool runUbxSequence(const UbxCommandSequence &sequence,
+                    const char *label) {
+  const char *stage = label ? label : "sequence";
+  if (!sequence.commands || sequence.length == 0) {
+    logPrintf("[gps] UBX %s: skipped (no commands)\n", stage);
+    return true;
+  }
+  logPrintf("[gps] UBX %s: running %u command(s)\n", stage,
+            static_cast<unsigned>(sequence.length));
+  for (size_t i = 0; i < sequence.length; ++i) {
+    const UbxBinaryCommand &command = sequence.commands[i];
+    if (!command.data || command.size < 8) {
+      logPrintf("[gps] UBX %s: command %u is invalid\n", stage,
+                static_cast<unsigned>(i));
+      return false;
+    }
+    if (!sendUbxCommandExpectAck(command)) {
+      logPrintf("[gps] UBX %s: command %u failed (no ACK)\n", stage,
+                static_cast<unsigned>(i));
+      return false;
+    }
+    delay(kUbxInterCommandDelayMs);
+  }
+  logPrintf("[gps] UBX %s: completed\n", stage);
+  return true;
+}
+
+bool waitForUbxResponse(uint8_t expectedClass, uint8_t expectedId,
+                        uint32_t timeoutMs) {
+  UbxFrame frame;
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
+    uint32_t elapsed = millis() - start;
+    uint32_t remaining = (elapsed >= timeoutMs) ? 0 : (timeoutMs - elapsed);
+    if (remaining == 0) {
+      remaining = 1;
+    }
+    if (!readUbxFrame(frame, remaining)) {
+      return false;
+    }
+    if (frame.msgClass == expectedClass && frame.msgId == expectedId) {
+      logUbxFrame("UBX response", frame);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool probeUbxLink() {
+  if (!kUbxPingCommand.data || kUbxPingCommand.size < 8) {
+    logPrintln("[gps] UBX ping command is not configured");
+    return false;
+  }
+  if (!sendUbxCommand(kUbxPingCommand)) {
+    logPrintln("[gps] Failed to send UBX ping command");
+    return false;
+  }
+  if (waitForUbxResponse(kUbxPingCommand.data[2], kUbxPingCommand.data[3],
+                         kUbxResponseTimeoutMs)) {
+    logPrintln("[gps] UBX ping response received");
+    return true;
+  }
+  logPrintln("[gps] UBX ping timed out");
+  return false;
+}
 } // namespace
 
 GpsController &gpsController() {
@@ -27,6 +401,7 @@ void GpsController::begin() {
   state = GpsRuntimeState{};
   state.bootMillis = millis();
   gpsSerialBaudValue = loadStoredGpsBaud();
+  currentProfile = loadStoredUbxProfile();
   prevFix = 255;
   prevHdop10 = -1;
   prevStrong = prevMedium = prevWeak = 255;
@@ -34,7 +409,7 @@ void GpsController::begin() {
   pinMode(GPS_EN, OUTPUT);
   digitalWrite(GPS_EN, HIGH);
 
-  configureGpsSerial(true, true);
+  applyUbxProfile(currentProfile);
 }
 
 void GpsController::loop() {
@@ -77,6 +452,41 @@ bool GpsController::setBaud(uint32_t baud) {
 }
 
 uint32_t GpsController::baud() const { return gpsSerialBaudValue; }
+
+UbxConfigProfile GpsController::ubxProfile() const { return currentProfile; }
+
+bool GpsController::applyUbxProfile(UbxConfigProfile profile) {
+  if (state.passthroughActive) {
+    logPrintln("[gps] Cannot apply UBX profile while in passthrough mode");
+    return false;
+  }
+  configureGpsSerial(false, true);
+  bool success = runUbxStartupSequence();
+  if (!state.passthroughActive) {
+    configureGpsSerial(true, true);
+    resetNavigationState();
+  }
+  return success;
+}
+
+bool GpsController::setUbxProfile(UbxConfigProfile profile) {
+  size_t index = static_cast<size_t>(profile);
+  if (index >= kUbxConfigProfileCount) {
+    profile = kDefaultUbxProfile;
+  }
+  if (state.passthroughActive) {
+    logPrintln("[gps] Cannot change UBX profile in passthrough mode");
+    return false;
+  }
+  if (profile != currentProfile) {
+    logPrintf("[gps] UBX profile -> %s\n", ubxProfileName(profile));
+    currentProfile = profile;
+    persistUbxProfile(profile);
+  }
+  bool success = applyUbxProfile(profile);
+  updateUbxProfileCharacteristic(profile);
+  return success;
+}
 
 void GpsController::addNavPublisher(NavDataPublisher *publisher) {
   if (!publisher)
@@ -121,6 +531,39 @@ void GpsController::configureGpsSerial(bool enableParser, bool forceReinit) {
   parserEnabled = enableParser;
 }
 
+bool GpsController::runUbxStartupSequence() {
+  const char *profileLabel = ubxProfileName(currentProfile);
+  logPrintf("[gps] UBX startup sequence begin (%s)\n", profileLabel);
+  if (kUbxStartupDelayMs > 0) {
+    delay(kUbxStartupDelayMs);
+  }
+  drainGpsSerialInput();
+
+  bool disableOk = runUbxSequence(kUbxDisableNmeaSequence, "disable NMEA");
+  bool linkOk = probeUbxLink();
+  bool defaultsOk =
+      runUbxSequence(kUbxDefaultSettingsSequence, "defaults");
+  bool profileOk =
+      runUbxSequence(ubxProfileSequence(currentProfile), profileLabel);
+  bool verifyOk = verifyUbxProfile(currentProfile);
+  bool enableOk = runUbxSequence(kUbxEnableNmeaSequence, "enable NMEA");
+
+  drainGpsSerialInput();
+
+  state.ubxLinkOk = linkOk && verifyOk;
+  state.ubxConfigured =
+      state.ubxLinkOk && defaultsOk && profileOk;
+
+  bool success =
+      disableOk && linkOk && defaultsOk && profileOk && verifyOk && enableOk;
+  if (success) {
+    logPrintln("[gps] UBX startup sequence completed");
+  } else {
+    logPrintln("[gps] UBX startup sequence failed");
+  }
+  return success;
+}
+
 uint32_t GpsController::loadStoredGpsBaud() {
   Preferences prefs;
   uint32_t stored = GPS_BAUD_RATE;
@@ -138,6 +581,27 @@ void GpsController::persistGpsBaud(uint32_t baud) {
   Preferences prefs;
   if (prefs.begin(kGpsPrefsNamespace, false)) {
     prefs.putUInt(kGpsBaudKey, baud);
+    prefs.end();
+  }
+}
+
+UbxConfigProfile GpsController::loadStoredUbxProfile() {
+  Preferences prefs;
+  uint8_t stored = static_cast<uint8_t>(kDefaultUbxProfile);
+  if (prefs.begin(kGpsPrefsNamespace, true)) {
+    stored = prefs.getUChar(kGpsProfileKey, stored);
+    prefs.end();
+  }
+  if (stored >= kUbxConfigProfileCount) {
+    stored = static_cast<uint8_t>(kDefaultUbxProfile);
+  }
+  return static_cast<UbxConfigProfile>(stored);
+}
+
+void GpsController::persistUbxProfile(UbxConfigProfile profile) {
+  Preferences prefs;
+  if (prefs.begin(kGpsPrefsNamespace, false)) {
+    prefs.putUChar(kGpsProfileKey, static_cast<uint8_t>(profile));
     prefs.end();
   }
 }
@@ -294,6 +758,9 @@ uint8_t GpsController::determineSystemStatus(uint8_t fix,
   if (getStatusIndicatorState() == STATUS_BOOTING) {
     return STATUS_BOOTING;
   }
+  if (!state.ubxLinkOk) {
+    return STATUS_NO_MODEM;
+  }
   if (!fix || activeSatellites < 4) {
     return STATUS_NO_FIX;
   }
@@ -303,8 +770,45 @@ uint8_t GpsController::determineSystemStatus(uint8_t fix,
   return STATUS_READY;
 }
 
+bool GpsController::verifyUbxProfile(UbxConfigProfile profile) {
+  size_t entryCount = 0;
+  const UbxKeyValue *entries =
+      ubxProfileValidationTargets(profile, entryCount);
+  if (!entries || entryCount == 0) {
+    return true;
+  }
+  bool allGood = true;
+  for (size_t i = 0; i < entryCount; ++i) {
+    uint8_t value = 0;
+    if (!requestUbxConfigValue(entries[i].key, value,
+                               kUbxValgetLayerRam)) {
+      logPrintf("[gps] UBX verify failed to read key 0x%08lX\n",
+                static_cast<unsigned long>(entries[i].key));
+      allGood = false;
+      continue;
+    }
+    if (value != entries[i].value) {
+      logPrintf("[gps] UBX verify mismatch key 0x%08lX expected %u got %u\n",
+                static_cast<unsigned long>(entries[i].key),
+                static_cast<unsigned>(entries[i].value),
+                static_cast<unsigned>(value));
+      allGood = false;
+    }
+  }
+  if (allGood) {
+    logPrintf("[gps] UBX verify OK for %s\n", ubxProfileName(profile));
+  }
+  return allGood;
+}
+
 uint32_t getGpsSerialBaud() { return gpsController().baud(); }
 
 bool setGpsSerialBaud(uint32_t baud) {
   return gpsController().setBaud(baud);
+}
+
+UbxConfigProfile getGpsUbxProfile() { return gpsController().ubxProfile(); }
+
+bool setGpsUbxProfile(UbxConfigProfile profile) {
+  return gpsController().setUbxProfile(profile);
 }

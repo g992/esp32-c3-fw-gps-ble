@@ -10,11 +10,12 @@
 // Пины индикации
 #define LED_STATUS_PIN 8 // Светодиод статуса с инверсным управлением
 
-#define WIFI_AP_BUTTON_PIN 9   // Кнопка вызова режима точки доступа (активный уровень LOW)
+#define WIFI_AP_BUTTON_PIN                                                     \
+  9 // Кнопка вызова режима точки доступа (активный уровень LOW)
 #define WIFI_AP_TRIGGER_MS 5000 // Время удержания для включения AP, мс
 
 // Настройки UART
-#define GPS_BAUD_RATE 115200 // Скорость обмена с GPS по UART
+#define GPS_BAUD_RATE 38400 // Скорость обмена с GPS по UART
 
 // Интервал вывода информации в миллисекундах (10 Гц)
 #define OUTPUT_INTERVAL_MS 100
@@ -30,11 +31,9 @@
 #define STATUS_READY 5    // Готов к работе
 
 // Временные интервалы для индикации (мс)
-#define BOOT_DURATION_MS 3000 // Длительность подсветки при запуске
-#define BLINK_DURATION_MS 200 // Продолжительность импульса
-#define NO_FIX_INTERVAL_MS                                                     \
-  800 // Интервал статуса «нет фиксации» (.--.------)
-#define NO_MODEM_INTERVAL_MS                                                   \
-  400 // Интервал статуса «нет модема» (.--.--.---)
+#define BOOT_DURATION_MS 3000    // Длительность подсветки при запуске
+#define BLINK_DURATION_MS 200    // Продолжительность импульса
+#define NO_FIX_INTERVAL_MS 800   // Интервал статуса «нет фиксации» (.--.------)
+#define NO_MODEM_INTERVAL_MS 400 // Интервал статуса «нет модема» (.--.--.---)
 
 #endif // Завершение охранного макроса

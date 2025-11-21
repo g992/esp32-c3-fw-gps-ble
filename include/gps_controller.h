@@ -5,6 +5,7 @@
 
 #include "data_channel.h"
 #include "gps_runtime_state.h"
+#include "ubx_command_set.h"
 
 class GpsController {
 public:
@@ -12,6 +13,8 @@ public:
   void loop();
   bool setBaud(uint32_t baud);
   uint32_t baud() const;
+  bool setUbxProfile(UbxConfigProfile profile);
+  UbxConfigProfile ubxProfile() const;
   void addNavPublisher(NavDataPublisher *publisher);
   void addStatusPublisher(SystemStatusPublisher *publisher);
 
@@ -23,9 +26,15 @@ private:
   void processPassthroughIO();
   void processNavigationUpdate();
   uint8_t determineSystemStatus(uint8_t fix, uint8_t activeSatellites) const;
+  bool runUbxStartupSequence();
+  bool verifyUbxProfile(UbxConfigProfile profile);
+  UbxConfigProfile loadStoredUbxProfile();
+  void persistUbxProfile(UbxConfigProfile profile);
+  bool applyUbxProfile(UbxConfigProfile profile);
 
   GpsRuntimeState state;
   uint32_t gpsSerialBaudValue = 0;
+  UbxConfigProfile currentProfile = UbxConfigProfile::FullSystems;
   bool parserEnabled = false;
   uint8_t prevFix = 255;
   int prevHdop10 = -1;

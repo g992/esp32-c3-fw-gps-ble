@@ -17,6 +17,8 @@
   - `'0'` keeps the GNSS navigation loop active; `'1'` enables UART passthrough. The characteristic always mirrors the effective mode.
 - `f3a1a816-28f2-4b6d-9f76-6f7aa2d06123` (`READ`, `WRITE`) — GPS UART baud rate
   - Accepts an ASCII decimal string between `4800` and `921600`. Successful writes reinitialize the GPS serial port at the requested baud and persist it for subsequent boots.
+- `1fd95e59-993e-4bf5-a0b7-f481508c9a94` (`READ`, `WRITE`) — UBX GNSS profile
+  - `'0'` = Full systems (default), `'1'` = GLONASS + BeiDou + Galileo, `'2'` = GLONASS only. Writing replays the UBX script (NMEA off → MON-VER → defaults → selected profile → CFG-VALGET verify → NMEA on) and stores the selection in NVS.
 - `6b5d5304-4523-4db4-9a31-0f3d88c2ce11` (`WRITE`) — connection keepalive
   - Clients should write any payload (for example `'1'`) at least once every 10 seconds; otherwise the server disconnects the link. The value itself is ignored.
 
