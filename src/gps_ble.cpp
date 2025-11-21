@@ -12,6 +12,7 @@ NimBLECharacteristic *pCharStatus = nullptr;
 NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
 NimBLECharacteristic *pCharGpsBaud = nullptr;
+NimBLECharacteristic *pCharUbxProfile = nullptr;
 NimBLECharacteristic *pCharKeepAlive = nullptr;
 
 NimBLEServer *pServer = nullptr;
@@ -28,6 +29,7 @@ static constexpr float kAltEps = 0.5f;
 
 static uint8_t apStateValue = '0';
 static uint8_t modeStateValue = '0';
+static uint8_t ubxProfileStateValue = '0';
 
 class BleDataPublisher : public NavDataPublisher, public SystemStatusPublisher {
 public:
@@ -75,6 +77,14 @@ static void onModeChanged(OperationMode) { refreshModeCharacteristic(); }
 
 static void refreshGpsBaudCharacteristic() {
   setGpsBaudCharacteristicValue(getGpsSerialBaud());
+}
+
+static void refreshUbxProfileCharacteristic() {
+  if (!pCharUbxProfile)
+    return;
+  UbxConfigProfile profile = getGpsUbxProfile();
+  ubxProfileStateValue = static_cast<uint8_t>(ubxProfileToChar(profile));
+  pCharUbxProfile->setValue(&ubxProfileStateValue, 1);
 }
 
 static void setGpsBaudCharacteristicValue(uint32_t baud) {
@@ -156,6 +166,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     refreshApControlCharacteristic();
     refreshModeCharacteristic();
     refreshGpsBaudCharacteristic();
+    refreshUbxProfileCharacteristic();
   }
 
   void onConnect(NimBLEServer *server) override { onConnect(server, nullptr); }
@@ -218,6 +229,23 @@ class GpsBaudCallbacks : public NimBLECharacteristicCallbacks {
   void onRead(NimBLECharacteristic *) { refreshGpsBaudCharacteristic(); }
 } gpsBaudCallbacks;
 
+class UbxProfileCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    if (value.empty())
+      return;
+    UbxConfigProfile profile;
+    if (!ubxProfileFromChar(value[0], profile))
+      return;
+    if (!setGpsUbxProfile(profile)) {
+      logPrintln("[ble] Failed to apply UBX profile");
+    }
+    refreshUbxProfileCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) { refreshUbxProfileCharacteristic(); }
+} ubxProfileCallbacks;
+
 class KeepAliveCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *characteristic) {
     (void)characteristic;
@@ -277,6 +305,11 @@ void initBLE() {
       CHAR_GPS_BAUD_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
   pCharGpsBaud->setCallbacks(&gpsBaudCallbacks);
   refreshGpsBaudCharacteristic();
+
+  pCharUbxProfile = pService->createCharacteristic(
+      CHAR_UBX_PROFILE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  pCharUbxProfile->setCallbacks(&ubxProfileCallbacks);
+  refreshUbxProfileCharacteristic();
 
   pCharKeepAlive = pService->createCharacteristic(CHAR_KEEPALIVE_UUID,
                                                   NIMBLE_PROPERTY::WRITE);
@@ -361,6 +394,13 @@ void updatePassthroughModeCharacteristic() { refreshModeCharacteristic(); }
 
 void updateGpsBaudCharacteristic(uint32_t baud) {
   setGpsBaudCharacteristicValue(baud);
+}
+
+void updateUbxProfileCharacteristic(UbxConfigProfile profile) {
+  ubxProfileStateValue = static_cast<uint8_t>(ubxProfileToChar(profile));
+  if (pCharUbxProfile) {
+    pCharUbxProfile->setValue(&ubxProfileStateValue, 1);
+  }
 }
 
 NavDataPublisher *bleNavPublisher() { return &gBlePublisher; }

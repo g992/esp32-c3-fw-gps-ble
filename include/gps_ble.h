@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "data_channel.h"
+#include "ubx_command_set.h"
 #include <NimBLECharacteristic.h>
 #include <NimBLEDevice.h>
 #include <NimBLEServer.h>
@@ -16,6 +17,8 @@ static const char *CHAR_MODE_CONTROL_UUID =
     "d047f6b3-5f7c-4e5b-9c21-4c0f2b6a8f10";
 static const char *CHAR_GPS_BAUD_UUID =
     "f3a1a816-28f2-4b6d-9f76-6f7aa2d06123";
+static const char *CHAR_UBX_PROFILE_UUID =
+    "1fd95e59-993e-4bf5-a0b7-f481508c9a94";
 static const char *CHAR_KEEPALIVE_UUID =
     "6b5d5304-4523-4db4-9a31-0f3d88c2ce11";
 
@@ -24,6 +27,7 @@ extern NimBLECharacteristic *pCharStatus;
 extern NimBLECharacteristic *pCharApControl;
 extern NimBLECharacteristic *pCharModeControl;
 extern NimBLECharacteristic *pCharGpsBaud;
+extern NimBLECharacteristic *pCharUbxProfile;
 
 extern NimBLEServer *pServer;
 
@@ -31,6 +35,7 @@ void initBLE();
 void updateApControlCharacteristic(bool apActive);
 void updatePassthroughModeCharacteristic();
 void updateGpsBaudCharacteristic(uint32_t baud);
+void updateUbxProfileCharacteristic(UbxConfigProfile profile);
 
 NavDataPublisher *bleNavPublisher();
 SystemStatusPublisher *bleStatusPublisher();
