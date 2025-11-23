@@ -5,6 +5,7 @@ class FirmwareApp {
 public:
   void begin();
   void tick();
+  void requestRestart(const char *reason);
 
 private:
   void configurePublishers();

@@ -21,3 +21,7 @@
 - Команды описаны в `src/ubx_command_set.cpp`: `kUbxDisableNmeaSequence`, `kUbxDefaultSettingsSequence`, профильные последовательности (`Full systems`, `GLONASS+BeiDou+Galileo`, `GLONASS only`) и `kUbxEnableNmeaSequence`. При необходимости добавляйте свои пакеты (включая sync/CK) или правьте значения ключей `UbxKeyValue`.
 - Проверка CFG-VALGET выполняется для всех ключей активного профиля; несоответствие или таймаут переводят индикатор в состояние `STATUS_NO_MODEM`.
 - Профиль выбирается по BLE характеристике или при загрузке из NVS (ключ `profile`); значение `'0'` (Full systems) используется по умолчанию.
+
+## OTA инструменты
+- `BLE_PROTOCOL.md` фиксирует текущие UUID и формат OTA-пакетов. Для мобильной команды добавлен отдельный справочник JSON-уведомлений в `docs/OTA_STATUS_JSON.md`.
+- Скрипт `tools/ota_protocol_tester.py` помогает готовить обновления: режим `encode` выводит команды `CMD=START/FINISH` и контрольные суммы, а `verify-log` проверяет логи статуса, пойманные через `pio device monitor`.

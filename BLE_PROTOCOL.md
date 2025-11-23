@@ -35,17 +35,23 @@
 ### Characteristics
 - `0f6f8ff7-1b61-4d44-9f31-3536c3a601a7` (`READ`, `WRITE`, `WRITE_NR`) — control plane
   - Text payload with semicolon-separated key/value pairs. Required flow:
-    - `CMD=START;SIZE=<bytes>[;SHA256=<64 hex>][;CRC32=<hex>]`
+    - `CMD=START;SIZE=<bytes>;SHA256=<64 hex>;CRC32=<hex>`
     - `CMD=FINISH` after all chunks are delivered.
     - `CMD=ABORT` cancels the active session.
-  - `SIZE` must not exceed the `app1` partition. SHA256/CRC32 are optional but strongly recommended.
-- `cb08c9fd-6c57-4b51-8bbe-20f3214bf3e9` (`WRITE_NR`) — data plane
-  - Each write begins with a 32-bit little-endian image offset followed by raw firmware bytes (max 512 B per packet).
-  - Offsets must be contiguous; mismatches abort the session.
+  - `SIZE` must not exceed the `app1` partition. SHA256 and CRC32 are both mandatory and validated before boot swap.
+- `cb08c9fd-6c57-4b51-8bbe-20f3214bf3e9` (`WRITE`) — data plane
+  - Each packet is acknowledged and contains:
+    - 32-bit little-endian image offset (must equal the expected write cursor).
+    - 16-bit little-endian payload length (`<= 480` bytes so the full ATT packet stays under 512 B).
+    - Raw firmware bytes.
+    - 32-bit little-endian CRC32 of the payload bytes.
+  - The device checks offset sequencing and per-packet CRC32 before committing to flash; any mismatch aborts the session.
+  - Clients must wait for the acknowledgement notification before sending the next packet. The GATT write response only confirms receipt; the subsequent status notification confirms CRC verification.
 - `d19d3c86-9ba9-4a52-9244-99118bd88d08` (`READ`, `NOTIFY`) — status
   - JSON updates such as `{"state":"idle"}`, `{"state":"receiving","received":4096,"total":65536}`,
-    `{"state":"error","message":"sha_mismatch"}`, and `{"state":"ready","message":"rebooting"}`.
-  - The device aborts on disconnect, offset errors, checksum failures, or OTA API errors.
+    `{"state":"chunk_ack","next":4096}`, `{"state":"error","message":"sha_mismatch"}`, and `{"state":"ready","message":"rebooting"}`.
+  - Chunk acknowledgements mirror the next required offset; errors include `"message"` plus `"offset"` when applicable. The device aborts on disconnect, offset errors, checksum failures, or OTA API errors.
+  - See `docs/OTA_STATUS_JSON.md` for a catalog of complete JSON examples for the Android team.
 
 ### Boot Behavior
 - Firmware images stream into the `ota_1` (app1) slot; the factory `ota_0` image remains untouched for rollback.

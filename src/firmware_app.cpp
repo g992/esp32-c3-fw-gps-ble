@@ -41,6 +41,19 @@ void FirmwareApp::tick() {
   processPendingRestart();
 }
 
+void FirmwareApp::requestRestart(const char *reason) {
+  if (restartPending)
+    return;
+  restartPending = true;
+  restartReason = reason;
+  restartRequestedAt = millis();
+  if (reason) {
+    logPrintf("[sys] Restart requested (%s)\n", reason);
+  } else {
+    logPrintln("[sys] Restart requested");
+  }
+}
+
 void FirmwareApp::configurePublishers() {
   gpsController().addNavPublisher(bleNavPublisher());
   gpsController().addStatusPublisher(bleStatusPublisher());
@@ -57,8 +70,15 @@ void FirmwareApp::processPendingRestart() {
     return;
   if (millis() - restartRequestedAt < 200)
     return;
-  logPrintln("[sys] Restarting now...");
-  Serial.println("[sys] Restarting now...");
+  if (restartReason) {
+    logPrintf("[sys] Restarting now (%s)\n", restartReason);
+    Serial.print("[sys] Restarting now (");
+    Serial.print(restartReason);
+    Serial.println(")");
+  } else {
+    logPrintln("[sys] Restarting now...");
+    Serial.println("[sys] Restarting now...");
+  }
   Serial.flush();
   delay(50);
   esp_restart();

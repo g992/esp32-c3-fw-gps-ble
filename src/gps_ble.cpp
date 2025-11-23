@@ -3,6 +3,7 @@
 #include "firmware_app.h"
 #include "gps_serial_control.h"
 #include "logger.h"
+#include "ota_service.h"
 #include "system_mode.h"
 #include "wifi_manager.h"
 #include <Arduino.h>
@@ -177,6 +178,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleConnected = false;
     currentConnHandle = 0xFFFF;
     lastKeepAliveMillis = 0;
+    otaHandleBleDisconnect();
     if (pServer) {
       pServer->startAdvertising();
     }
@@ -316,10 +318,12 @@ void initBLE() {
   pCharKeepAlive->setCallbacks(&keepAliveCallbacks);
 
   pService->start();
+  initOtaService(pServer);
 
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->setName("GPS-C3");
   pAdvertising->addServiceUUID(GPS_SERVICE_UUID);
+  pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
   pAdvertising->setScanResponse(false);
   pAdvertising->setMinInterval(0x0800);
   pAdvertising->setMaxInterval(0x1000);
