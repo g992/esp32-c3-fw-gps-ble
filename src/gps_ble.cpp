@@ -21,6 +21,7 @@ NimBLEServer *pServer = nullptr;
 static bool bleConnected = false;
 static uint16_t currentConnHandle = 0xFFFF;
 static unsigned long lastKeepAliveMillis = 0;
+static bool keepAliveTimeoutPaused = false;
 static constexpr unsigned long kKeepAliveTimeoutMs = 10000;
 
 static constexpr float kLatLonEps = 1e-5f;
@@ -178,6 +179,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleConnected = false;
     currentConnHandle = 0xFFFF;
     lastKeepAliveMillis = 0;
+    keepAliveTimeoutPaused = false;
     otaHandleBleDisconnect();
     if (pServer) {
       pServer->startAdvertising();
@@ -422,6 +424,16 @@ void bleTick() {
     return;
   if (currentConnHandle == 0xFFFF)
     return;
+
+  bool otaActive = otaSessionActive();
+  if (otaActive) {
+    keepAliveTimeoutPaused = true;
+    return;
+  }
+  if (keepAliveTimeoutPaused) {
+    keepAliveTimeoutPaused = false;
+    lastKeepAliveMillis = millis();
+  }
 
   unsigned long now = millis();
   if (lastKeepAliveMillis != 0 &&

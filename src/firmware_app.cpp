@@ -18,6 +18,8 @@ FirmwareApp &firmwareApp() {
 void FirmwareApp::begin() {
   pinMode(5, OUTPUT);
   digitalWrite(5, HIGH);
+  pinMode(10, OUTPUT);
+  digitalWrite(10, LOW);
   Serial.begin(115200);
   initSystemMode();
   logPrintln("[sys] Booting firmware...");

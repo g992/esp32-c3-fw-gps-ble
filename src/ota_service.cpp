@@ -534,6 +534,8 @@ void OtaDataCallbacks::onWrite(NimBLECharacteristic *characteristic) {
 
 } // namespace
 
+bool otaSessionActive() { return gSession.active; }
+
 void initOtaService(NimBLEServer *server) {
   if (!server)
     return;

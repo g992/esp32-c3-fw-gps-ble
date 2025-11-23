@@ -11,6 +11,7 @@ static const char *OTA_STATUS_CHAR_UUID =
     "d19d3c86-9ba9-4a52-9244-99118bd88d08";
 
 void initOtaService(NimBLEServer *server);
+bool otaSessionActive();
 void otaHandleBleDisconnect();
 
 #endif
