@@ -21,7 +21,16 @@
 - `f3a1a816-28f2-4b6d-9f76-6f7aa2d06123` (`READ`, `WRITE`) — GPS UART baud rate
   - Accepts an ASCII decimal string between `4800` and `921600`. Successful writes reinitialize the GPS serial port at the requested baud and persist it for subsequent boots.
 - `1fd95e59-993e-4bf5-a0b7-f481508c9a94` (`READ`, `WRITE`) — UBX GNSS profile
-  - `'0'` = Full systems (default), `'1'` = GLONASS + BeiDou + Galileo, `'2'` = GLONASS only. Writing replays the UBX script (NMEA off → MON-VER → defaults → selected profile → CFG-VALGET verify → NMEA on) and stores the selection in NVS.
+  - `'0'` = Full systems (default), `'1'` = GLONASS + BeiDou + Galileo, `'2'` = GLONASS only, `'3'` = Custom.
+  - When set to custom, the device sends the user-supplied UBX CFG-VALSET frame from the custom profile characteristic; if none is stored, it falls back to the Full systems script.
+- `7f0c9ad9-c6e8-4d2a-b3c1-1703708c6c2d` (`READ`, `WRITE`) — UBX base settings profile
+  - `'0'` = Default RAM + BBR (factory `kDefaultRamCmd` + `kDefaultBbrCmd`), `'1'` = Custom RAM only.
+  - Custom mode replays only the user command stored in the custom settings characteristic (no BBR write).
+- `0abf4f57-12a2-47d9-9c61-96e0d47f332b` (`READ`, `WRITE`) — custom UBX GNSS profile frame
+  - Payload: space-separated hex string of a full UBX frame (sync, class, id, LEN, payload, checksum). Parsed and validated (sync/length/checksum) before storing to NVS.
+  - Applied on boot or when the GNSS profile is set to custom.
+- `4b88f5a8-3b35-4c64-a241-0c7fdfced0e0` (`READ`, `WRITE`) — custom UBX base settings frame
+  - Payload format matches the custom profile frame. Stored in NVS and replayed to RAM when the base settings profile is set to custom (no BBR write).
 - `6b5d5304-4523-4db4-9a31-0f3d88c2ce11` (`WRITE`) — connection keepalive
   - Clients should write any payload (for example `'1'`) at least once every 10 seconds; otherwise the server disconnects the link. The value itself is ignored.
 - `0f6f8ff7-1b61-4d44-9f31-3536c3a601a7` (`READ`, `WRITE`, `NOTIFY`) — OTA enable/guard

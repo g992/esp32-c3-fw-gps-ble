@@ -32,4 +32,9 @@ uint8_t getStatusIndicatorState();
  */
 void IRAM_ATTR onPPSInterrupt();
 
+// Управление светодиодом режимов (GPIO10, активный LOW)
+void initModeLED();
+void updateModeLED(bool passthroughActive, bool otaInProgress,
+                   bool wifiConnected);
+
 #endif // Завершение охранного макроса

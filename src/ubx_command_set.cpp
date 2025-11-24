@@ -1,5 +1,7 @@
 #include "ubx_command_set.h"
 
+#include <string.h>
+
 namespace {
 constexpr uint8_t kMonVerRequest[] = {0xB5, 0x62, 0x0A, 0x04, 0x00,
                                       0x00, 0x0E, 0x34};
@@ -73,6 +75,13 @@ const UbxBinaryCommand kDefaultSettingCommands[] = {
     {kDefaultRamCmd, sizeof(kDefaultRamCmd)},
     {kDefaultBbrCmd, sizeof(kDefaultBbrCmd)}};
 
+uint8_t gCustomSettingsBuffer[kMaxUbxCustomCommandSize] = {};
+uint8_t gCustomProfileBuffer[kMaxUbxCustomCommandSize] = {};
+UbxBinaryCommand gCustomSettingsCommand = {gCustomSettingsBuffer, 0};
+UbxBinaryCommand gCustomProfileCommand = {gCustomProfileBuffer, 0};
+UbxCommandSequence gCustomSettingsSequence = {&gCustomSettingsCommand, 0};
+UbxCommandSequence gCustomProfileSequence = {&gCustomProfileCommand, 0};
+
 const UbxBinaryCommand kFullSystemsCommands[] = {
     {kGnssFullSystemsCmd, sizeof(kGnssFullSystemsCmd)}};
 
@@ -128,9 +137,39 @@ constexpr UbxProfileDescriptor kProfileTable[] = {
     {"GLONASS only", &kGlonassOnlySequence, kGlonassOnlyValidation,
      sizeof(kGlonassOnlyValidation) / sizeof(kGlonassOnlyValidation[0])}};
 
-static_assert(sizeof(kProfileTable) / sizeof(kProfileTable[0]) ==
-                  kUbxConfigProfileCount,
-              "Profile table mismatch");
+constexpr size_t kUbxBuiltinProfileCount =
+    sizeof(kProfileTable) / sizeof(kProfileTable[0]);
+
+static_assert(kUbxBuiltinProfileCount == 3,
+              "Unexpected UBX profile table size");
+
+bool hasValidCustomCommand(const UbxCommandSequence &sequence,
+                           const UbxBinaryCommand &command) {
+  return sequence.length > 0 && command.data && command.size >= 8;
+}
+
+bool storeCustomCommand(const uint8_t *data, size_t size,
+                        UbxBinaryCommand &command,
+                        UbxCommandSequence &sequence,
+                        uint8_t *buffer) {
+  if (!data || size == 0 || size > kMaxUbxCustomCommandSize)
+    return false;
+  memcpy(buffer, data, size);
+  command.data = buffer;
+  command.size = size;
+  sequence.length = 1;
+  return true;
+}
+
+size_t copyCustomCommand(const UbxBinaryCommand &command, uint8_t *buffer,
+                         size_t capacity) {
+  if (!buffer || capacity == 0)
+    return 0;
+  if (!command.data || command.size == 0 || command.size > capacity)
+    return 0;
+  memcpy(buffer, command.data, command.size);
+  return command.size;
+}
 } // namespace
 
 const UbxBinaryCommand kUbxPingCommand = {kMonVerRequest,
@@ -147,9 +186,54 @@ const UbxCommandSequence kUbxEnableNmeaSequence = {
 const UbxCommandSequence kUbxDefaultSettingsSequence = {
     kDefaultSettingCommands,
     sizeof(kDefaultSettingCommands) / sizeof(kDefaultSettingCommands[0])};
+
+const UbxCommandSequence &ubxSettingsSequence(
+    UbxSettingsProfile profile) {
+  if (profile == UbxSettingsProfile::CustomRam &&
+      hasValidCustomCommand(gCustomSettingsSequence,
+                            gCustomSettingsCommand)) {
+    return gCustomSettingsSequence;
+  }
+  return kUbxDefaultSettingsSequence;
+}
+
+bool setCustomUbxSettingsCommand(const uint8_t *data, size_t size) {
+  return storeCustomCommand(data, size, gCustomSettingsCommand,
+                            gCustomSettingsSequence,
+                            gCustomSettingsBuffer);
+}
+
+bool hasCustomUbxSettingsCommand() {
+  return hasValidCustomCommand(gCustomSettingsSequence,
+                               gCustomSettingsCommand);
+}
+
+size_t copyCustomUbxSettingsCommand(uint8_t *buffer, size_t capacity) {
+  return copyCustomCommand(gCustomSettingsCommand, buffer, capacity);
+}
+
+bool setCustomUbxProfileCommand(const uint8_t *data, size_t size) {
+  return storeCustomCommand(data, size, gCustomProfileCommand,
+                            gCustomProfileSequence, gCustomProfileBuffer);
+}
+
+bool hasCustomUbxProfileCommand() {
+  return hasValidCustomCommand(gCustomProfileSequence,
+                               gCustomProfileCommand);
+}
+
+size_t copyCustomUbxProfileCommand(uint8_t *buffer, size_t capacity) {
+  return copyCustomCommand(gCustomProfileCommand, buffer, capacity);
+}
+
 const UbxCommandSequence &ubxProfileSequence(UbxConfigProfile profile) {
+  if (profile == UbxConfigProfile::Custom &&
+      hasValidCustomCommand(gCustomProfileSequence,
+                            gCustomProfileCommand)) {
+    return gCustomProfileSequence;
+  }
   size_t index = static_cast<size_t>(profile);
-  if (index >= sizeof(kProfileTable) / sizeof(kProfileTable[0])) {
+  if (index >= kUbxBuiltinProfileCount) {
     index = 0;
   }
   return *kProfileTable[index].sequence;
@@ -157,8 +241,12 @@ const UbxCommandSequence &ubxProfileSequence(UbxConfigProfile profile) {
 
 const UbxKeyValue *ubxProfileValidationTargets(UbxConfigProfile profile,
                                                size_t &count) {
+  if (profile == UbxConfigProfile::Custom) {
+    count = 0;
+    return nullptr;
+  }
   size_t index = static_cast<size_t>(profile);
-  if (index >= sizeof(kProfileTable) / sizeof(kProfileTable[0])) {
+  if (index >= kUbxBuiltinProfileCount) {
     index = 0;
   }
   count = kProfileTable[index].validationCount;
@@ -166,11 +254,24 @@ const UbxKeyValue *ubxProfileValidationTargets(UbxConfigProfile profile,
 }
 
 const char *ubxProfileName(UbxConfigProfile profile) {
+  if (profile == UbxConfigProfile::Custom) {
+    return "Custom";
+  }
   size_t index = static_cast<size_t>(profile);
-  if (index >= sizeof(kProfileTable) / sizeof(kProfileTable[0])) {
+  if (index >= kUbxBuiltinProfileCount) {
     index = 0;
   }
   return kProfileTable[index].name;
+}
+
+const char *ubxSettingsProfileName(UbxSettingsProfile profile) {
+  switch (profile) {
+  case UbxSettingsProfile::DefaultRamBbr:
+    return "Default RAM+BBR";
+  case UbxSettingsProfile::CustomRam:
+    return "Custom RAM";
+  }
+  return "Unknown";
 }
 
 char ubxProfileToChar(UbxConfigProfile profile) {
@@ -186,5 +287,23 @@ bool ubxProfileFromChar(char value, UbxConfigProfile &profileOut) {
     return false;
   }
   profileOut = static_cast<UbxConfigProfile>(value - '0');
+  return true;
+}
+
+char ubxSettingsProfileToChar(UbxSettingsProfile profile) {
+  size_t index = static_cast<size_t>(profile);
+  if (index >= 10) {
+    index = 0;
+  }
+  return static_cast<char>('0' + index);
+}
+
+bool ubxSettingsProfileFromChar(char value,
+                                UbxSettingsProfile &profileOut) {
+  if (value < '0' ||
+      value >= static_cast<char>('0' + kUbxSettingsProfileCount)) {
+    return false;
+  }
+  profileOut = static_cast<UbxSettingsProfile>(value - '0');
   return true;
 }

@@ -9,7 +9,9 @@
 #include "ubx_command_set.h"
 
 #include <Arduino.h>
+#include <ctype.h>
 #include <Preferences.h>
+#include <string>
 #include <iarduino_GPS_NMEA.h>
 
 namespace {
@@ -18,8 +20,13 @@ iarduino_GPS_NMEA gpsParser;
 constexpr const char *kGpsPrefsNamespace = "gpscfg";
 constexpr const char *kGpsBaudKey = "baud";
 constexpr const char *kGpsProfileKey = "profile";
+constexpr const char *kGpsSettingsProfileKey = "cfgsel";
+constexpr const char *kGpsCustomProfileKey = "custprof";
+constexpr const char *kGpsCustomSettingsKey = "custset";
 constexpr UbxConfigProfile kDefaultUbxProfile =
     UbxConfigProfile::FullSystems;
+constexpr UbxSettingsProfile kDefaultUbxSettingsProfile =
+    UbxSettingsProfile::DefaultRamBbr;
 constexpr size_t kUbxPayloadBufferSize = 196;
 constexpr uint32_t kUbxAckTimeoutMs = 600;
 constexpr uint32_t kUbxResponseTimeoutMs = 1200;
@@ -64,6 +71,122 @@ void logUbxFrame(const char *label, const UbxFrame &frame) {
   }
   logPrintf("[gps] %s payload: %s%s\n", tag, hexBuf,
             (frame.payloadStored > dump) ? "..." : "");
+}
+
+int hexDigitValue(char c) {
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'f')
+    return 10 + static_cast<int>(c - 'a');
+  if (c >= 'A' && c <= 'F')
+    return 10 + static_cast<int>(c - 'A');
+  return -1;
+}
+
+bool parseUbxHexCommand(const std::string &value, uint8_t *bufferOut,
+                        size_t &sizeOut, std::string &errorOut) {
+  sizeOut = 0;
+  if (!bufferOut) {
+    errorOut = "no buffer";
+    return false;
+  }
+
+  uint8_t temp[kMaxUbxCustomCommandSize];
+  size_t count = 0;
+  bool highNibble = true;
+  uint8_t current = 0;
+
+  for (char c : value) {
+    if (isspace(static_cast<unsigned char>(c)))
+      continue;
+    int digit = hexDigitValue(c);
+    if (digit < 0) {
+      errorOut = "non-hex character";
+      return false;
+    }
+    if (highNibble) {
+      current = static_cast<uint8_t>(digit << 4);
+      highNibble = false;
+      continue;
+    }
+    current = static_cast<uint8_t>(current | static_cast<uint8_t>(digit));
+    if (count >= kMaxUbxCustomCommandSize) {
+      errorOut = "command too long";
+      return false;
+    }
+    temp[count++] = current;
+    highNibble = true;
+  }
+
+  if (!highNibble) {
+    errorOut = "odd number of hex digits";
+    return false;
+  }
+  if (count == 0) {
+    errorOut = "empty command";
+    return false;
+  }
+  if (count < 8) {
+    errorOut = "command too short";
+    return false;
+  }
+  if (temp[0] != 0xB5 || temp[1] != 0x62) {
+    errorOut = "missing UBX sync";
+    return false;
+  }
+
+  uint16_t payloadLen = static_cast<uint16_t>(temp[4]) |
+                        (static_cast<uint16_t>(temp[5]) << 8);
+  size_t expectedSize = static_cast<size_t>(payloadLen) + 8;
+  if (expectedSize != count) {
+    errorOut = "length mismatch";
+    return false;
+  }
+
+  uint8_t ckA = 0;
+  uint8_t ckB = 0;
+  for (size_t i = 2; i < count - 2; ++i) {
+    ckA = static_cast<uint8_t>(ckA + temp[i]);
+    ckB = static_cast<uint8_t>(ckB + ckA);
+  }
+  if (ckA != temp[count - 2] || ckB != temp[count - 1]) {
+    errorOut = "checksum mismatch";
+    return false;
+  }
+
+  memcpy(bufferOut, temp, count);
+  sizeOut = count;
+  return true;
+}
+
+std::string formatUbxHexCommand(const uint8_t *data, size_t size) {
+  if (!data || size == 0)
+    return std::string();
+
+  std::string result;
+  result.reserve(size * 3);
+  for (size_t i = 0; i < size; ++i) {
+    char chunk[4];
+    int written = snprintf(chunk, sizeof(chunk), "%02X", data[i]);
+    if (written > 0) {
+      result.append(chunk);
+    }
+    if (i + 1 < size) {
+      result.push_back(' ');
+    }
+  }
+  return result;
+}
+
+void persistCustomCommand(const char *key, const uint8_t *data,
+                          size_t size) {
+  if (!data || size == 0)
+    return;
+  Preferences prefs;
+  if (prefs.begin(kGpsPrefsNamespace, false)) {
+    prefs.putBytes(key, data, size);
+    prefs.end();
+  }
 }
 
 bool sendUbxMessage(uint8_t msgClass, uint8_t msgId, const uint8_t *payload,
@@ -402,6 +525,8 @@ void GpsController::begin() {
   state.bootMillis = millis();
   gpsSerialBaudValue = loadStoredGpsBaud();
   currentProfile = loadStoredUbxProfile();
+  currentSettingsProfile = loadStoredUbxSettingsProfile();
+  loadStoredCustomCommands();
   prevFix = 255;
   prevHdop10 = -1;
   prevStrong = prevMedium = prevWeak = 255;
@@ -455,7 +580,12 @@ uint32_t GpsController::baud() const { return gpsSerialBaudValue; }
 
 UbxConfigProfile GpsController::ubxProfile() const { return currentProfile; }
 
+UbxSettingsProfile GpsController::ubxSettingsProfile() const {
+  return currentSettingsProfile;
+}
+
 bool GpsController::applyUbxProfile(UbxConfigProfile profile) {
+  (void)profile;
   if (state.passthroughActive) {
     logPrintln("[gps] Cannot apply UBX profile while in passthrough mode");
     return false;
@@ -485,6 +615,27 @@ bool GpsController::setUbxProfile(UbxConfigProfile profile) {
   }
   bool success = applyUbxProfile(profile);
   updateUbxProfileCharacteristic(profile);
+  return success;
+}
+
+bool GpsController::setUbxSettingsProfile(
+    UbxSettingsProfile profile) {
+  size_t index = static_cast<size_t>(profile);
+  if (index >= kUbxSettingsProfileCount) {
+    profile = kDefaultUbxSettingsProfile;
+  }
+  if (state.passthroughActive) {
+    logPrintln("[gps] Cannot change UBX settings in passthrough mode");
+    return false;
+  }
+  if (profile != currentSettingsProfile) {
+    logPrintf("[gps] UBX settings -> %s\n",
+              ubxSettingsProfileName(profile));
+    currentSettingsProfile = profile;
+    persistUbxSettingsProfile(profile);
+  }
+  bool success = applyUbxProfile(currentProfile);
+  updateUbxSettingsProfileCharacteristic(profile);
   return success;
 }
 
@@ -533,7 +684,17 @@ void GpsController::configureGpsSerial(bool enableParser, bool forceReinit) {
 
 bool GpsController::runUbxStartupSequence() {
   const char *profileLabel = ubxProfileName(currentProfile);
-  logPrintf("[gps] UBX startup sequence begin (%s)\n", profileLabel);
+  const char *settingsLabel = ubxSettingsProfileName(currentSettingsProfile);
+  UbxConfigProfile verifyProfile = currentProfile;
+  bool customProfileLoaded =
+      currentProfile == UbxConfigProfile::Custom &&
+      hasCustomUbxProfileCommand();
+  bool customSettingsLoaded =
+      currentSettingsProfile == UbxSettingsProfile::CustomRam &&
+      hasCustomUbxSettingsCommand();
+
+  logPrintf("[gps] UBX startup sequence begin (%s, %s)\n", profileLabel,
+            settingsLabel);
   if (kUbxStartupDelayMs > 0) {
     delay(kUbxStartupDelayMs);
   }
@@ -541,21 +702,32 @@ bool GpsController::runUbxStartupSequence() {
 
   bool disableOk = runUbxSequence(kUbxDisableNmeaSequence, "disable NMEA");
   bool linkOk = probeUbxLink();
-  bool defaultsOk =
-      runUbxSequence(kUbxDefaultSettingsSequence, "defaults");
+  if (currentSettingsProfile == UbxSettingsProfile::CustomRam &&
+      !customSettingsLoaded) {
+    logPrintln(
+        "[gps] Custom UBX settings selected, but no command is stored (fallback)");
+  }
+  bool settingsOk =
+      runUbxSequence(ubxSettingsSequence(currentSettingsProfile),
+                     settingsLabel);
+  if (currentProfile == UbxConfigProfile::Custom && !customProfileLoaded) {
+    logPrintln(
+        "[gps] Custom UBX profile selected, but no command is stored (fallback)");
+    verifyProfile = kDefaultUbxProfile;
+  }
   bool profileOk =
       runUbxSequence(ubxProfileSequence(currentProfile), profileLabel);
-  bool verifyOk = verifyUbxProfile(currentProfile);
+  bool verifyOk = verifyUbxProfile(verifyProfile);
   bool enableOk = runUbxSequence(kUbxEnableNmeaSequence, "enable NMEA");
 
   drainGpsSerialInput();
 
   state.ubxLinkOk = linkOk && verifyOk;
   state.ubxConfigured =
-      state.ubxLinkOk && defaultsOk && profileOk;
+      state.ubxLinkOk && settingsOk && profileOk;
 
   bool success =
-      disableOk && linkOk && defaultsOk && profileOk && verifyOk && enableOk;
+      disableOk && linkOk && settingsOk && profileOk && verifyOk && enableOk;
   if (success) {
     logPrintln("[gps] UBX startup sequence completed");
   } else {
@@ -604,6 +776,64 @@ void GpsController::persistUbxProfile(UbxConfigProfile profile) {
     prefs.putUChar(kGpsProfileKey, static_cast<uint8_t>(profile));
     prefs.end();
   }
+}
+
+UbxSettingsProfile GpsController::loadStoredUbxSettingsProfile() {
+  Preferences prefs;
+  uint8_t stored = static_cast<uint8_t>(kDefaultUbxSettingsProfile);
+  if (prefs.begin(kGpsPrefsNamespace, true)) {
+    stored = prefs.getUChar(kGpsSettingsProfileKey, stored);
+    prefs.end();
+  }
+  if (stored >= kUbxSettingsProfileCount) {
+    stored = static_cast<uint8_t>(kDefaultUbxSettingsProfile);
+  }
+  return static_cast<UbxSettingsProfile>(stored);
+}
+
+void GpsController::persistUbxSettingsProfile(
+    UbxSettingsProfile profile) {
+  Preferences prefs;
+  if (prefs.begin(kGpsPrefsNamespace, false)) {
+    prefs.putUChar(kGpsSettingsProfileKey,
+                  static_cast<uint8_t>(profile));
+    prefs.end();
+  }
+}
+
+void GpsController::loadStoredCustomCommands() {
+  Preferences prefs;
+  if (!prefs.begin(kGpsPrefsNamespace, true)) {
+    return;
+  }
+
+  auto load = [&](const char *key,
+                  bool (*setter)(const uint8_t *, size_t),
+                  const char *label) {
+    size_t length = prefs.getBytesLength(key);
+    if (length == 0)
+      return;
+    if (length > kMaxUbxCustomCommandSize) {
+      logPrintf("[gps] Stored %s command too large (%u bytes), skipping\n",
+                label, static_cast<unsigned>(length));
+      return;
+    }
+    uint8_t buffer[kMaxUbxCustomCommandSize];
+    size_t read = prefs.getBytes(key, buffer, length);
+    if (read != length) {
+      logPrintf("[gps] Failed to read %s command from NVS\n", label);
+      return;
+    }
+    if (!setter(buffer, length)) {
+      logPrintf("[gps] Failed to restore %s command\n", label);
+    }
+  };
+
+  load(kGpsCustomProfileKey, setCustomUbxProfileCommand,
+       "custom profile");
+  load(kGpsCustomSettingsKey, setCustomUbxSettingsCommand,
+       "custom settings");
+  prefs.end();
 }
 
 void GpsController::resetNavigationState() {
@@ -801,6 +1031,41 @@ bool GpsController::verifyUbxProfile(UbxConfigProfile profile) {
   return allGood;
 }
 
+namespace {
+bool storeCustomCommandFromHex(const std::string &value, bool settings) {
+  const char *label = settings ? "settings" : "profile";
+  uint8_t buffer[kMaxUbxCustomCommandSize];
+  size_t size = 0;
+  std::string error;
+  if (!parseUbxHexCommand(value, buffer, size, error)) {
+    logPrintf("[gps] Failed to parse custom %s command: %s\n", label,
+              error.c_str());
+    return false;
+  }
+
+  bool stored = settings ? setCustomUbxSettingsCommand(buffer, size)
+                         : setCustomUbxProfileCommand(buffer, size);
+  if (!stored) {
+    logPrintf("[gps] Failed to store custom %s command\n", label);
+    return false;
+  }
+
+  persistCustomCommand(settings ? kGpsCustomSettingsKey : kGpsCustomProfileKey,
+                       buffer, size);
+  logPrintf("[gps] Custom %s command saved (%u bytes)\n", label,
+            static_cast<unsigned>(size));
+  return true;
+}
+
+std::string currentCustomCommandHex(bool settings) {
+  uint8_t buffer[kMaxUbxCustomCommandSize];
+  size_t size = settings
+                    ? copyCustomUbxSettingsCommand(buffer, sizeof(buffer))
+                    : copyCustomUbxProfileCommand(buffer, sizeof(buffer));
+  return formatUbxHexCommand(buffer, size);
+}
+} // namespace
+
 uint32_t getGpsSerialBaud() { return gpsController().baud(); }
 
 bool setGpsSerialBaud(uint32_t baud) {
@@ -811,4 +1076,40 @@ UbxConfigProfile getGpsUbxProfile() { return gpsController().ubxProfile(); }
 
 bool setGpsUbxProfile(UbxConfigProfile profile) {
   return gpsController().setUbxProfile(profile);
+}
+
+UbxSettingsProfile getGpsUbxSettingsProfile() {
+  return gpsController().ubxSettingsProfile();
+}
+
+bool setGpsUbxSettingsProfile(UbxSettingsProfile profile) {
+  return gpsController().setUbxSettingsProfile(profile);
+}
+
+bool setGpsCustomProfileCommand(const std::string &hex) {
+  bool stored = storeCustomCommandFromHex(hex, false);
+  if (!stored)
+    return false;
+  if (getGpsUbxProfile() == UbxConfigProfile::Custom) {
+    return setGpsUbxProfile(UbxConfigProfile::Custom);
+  }
+  return true;
+}
+
+bool setGpsCustomSettingsCommand(const std::string &hex) {
+  bool stored = storeCustomCommandFromHex(hex, true);
+  if (!stored)
+    return false;
+  if (getGpsUbxSettingsProfile() == UbxSettingsProfile::CustomRam) {
+    return setGpsUbxSettingsProfile(UbxSettingsProfile::CustomRam);
+  }
+  return true;
+}
+
+std::string getGpsCustomProfileCommand() {
+  return currentCustomCommandHex(false);
+}
+
+std::string getGpsCustomSettingsCommand() {
+  return currentCustomCommandHex(true);
 }

@@ -16,6 +16,9 @@ NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
 NimBLECharacteristic *pCharGpsBaud = nullptr;
 NimBLECharacteristic *pCharUbxProfile = nullptr;
+NimBLECharacteristic *pCharUbxSettingsProfile = nullptr;
+NimBLECharacteristic *pCharUbxCustomProfile = nullptr;
+NimBLECharacteristic *pCharUbxCustomSettings = nullptr;
 NimBLECharacteristic *pCharKeepAlive = nullptr;
 NimBLECharacteristic *pCharBuildVersion = nullptr;
 
@@ -34,6 +37,7 @@ static constexpr float kAltEps = 0.5f;
 static uint8_t apStateValue = '0';
 static uint8_t modeStateValue = '0';
 static uint8_t ubxProfileStateValue = '0';
+static uint8_t ubxSettingsProfileStateValue = '0';
 
 static const char *wifiStateToString(WifiConnectionState state) {
   switch (state) {
@@ -122,6 +126,29 @@ static void refreshUbxProfileCharacteristic() {
   UbxConfigProfile profile = getGpsUbxProfile();
   ubxProfileStateValue = static_cast<uint8_t>(ubxProfileToChar(profile));
   pCharUbxProfile->setValue(&ubxProfileStateValue, 1);
+}
+
+static void refreshUbxSettingsProfileCharacteristic() {
+  if (!pCharUbxSettingsProfile)
+    return;
+  UbxSettingsProfile profile = getGpsUbxSettingsProfile();
+  ubxSettingsProfileStateValue =
+      static_cast<uint8_t>(ubxSettingsProfileToChar(profile));
+  pCharUbxSettingsProfile->setValue(&ubxSettingsProfileStateValue, 1);
+}
+
+static void refreshCustomProfileCommandCharacteristic() {
+  if (!pCharUbxCustomProfile)
+    return;
+  std::string value = getGpsCustomProfileCommand();
+  pCharUbxCustomProfile->setValue(value);
+}
+
+static void refreshCustomSettingsCommandCharacteristic() {
+  if (!pCharUbxCustomSettings)
+    return;
+  std::string value = getGpsCustomSettingsCommand();
+  pCharUbxCustomSettings->setValue(value);
 }
 
 static void refreshBuildVersionCharacteristic() {
@@ -213,6 +240,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     refreshModeCharacteristic();
     refreshGpsBaudCharacteristic();
     refreshUbxProfileCharacteristic();
+    refreshUbxSettingsProfileCharacteristic();
+    refreshCustomProfileCommandCharacteristic();
+    refreshCustomSettingsCommandCharacteristic();
   }
 
   void onConnect(NimBLEServer *server) override { onConnect(server, nullptr); }
@@ -297,6 +327,57 @@ class UbxProfileCallbacks : public NimBLECharacteristicCallbacks {
   void onRead(NimBLECharacteristic *) { refreshUbxProfileCharacteristic(); }
 } ubxProfileCallbacks;
 
+class UbxSettingsProfileCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    if (value.empty())
+      return;
+    UbxSettingsProfile profile;
+    if (!ubxSettingsProfileFromChar(value[0], profile))
+      return;
+    if (!setGpsUbxSettingsProfile(profile)) {
+      logPrintln("[ble] Failed to apply UBX settings profile");
+    }
+    refreshUbxSettingsProfileCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) {
+    refreshUbxSettingsProfileCharacteristic();
+  }
+} ubxSettingsProfileCallbacks;
+
+class UbxCustomProfileCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    if (value.empty())
+      return;
+    if (!setGpsCustomProfileCommand(value)) {
+      logPrintln("[ble] Failed to store custom UBX profile command");
+    }
+    refreshCustomProfileCommandCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) {
+    refreshCustomProfileCommandCharacteristic();
+  }
+} ubxCustomProfileCallbacks;
+
+class UbxCustomSettingsCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    if (value.empty())
+      return;
+    if (!setGpsCustomSettingsCommand(value)) {
+      logPrintln("[ble] Failed to store custom UBX settings command");
+    }
+    refreshCustomSettingsCommandCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) {
+    refreshCustomSettingsCommandCharacteristic();
+  }
+} ubxCustomSettingsCallbacks;
+
 class KeepAliveCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *characteristic) {
     (void)characteristic;
@@ -366,6 +447,24 @@ void initBLE() {
       CHAR_UBX_PROFILE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
   pCharUbxProfile->setCallbacks(&ubxProfileCallbacks);
   refreshUbxProfileCharacteristic();
+
+  pCharUbxSettingsProfile = pService->createCharacteristic(
+      CHAR_UBX_SETTINGS_PROFILE_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  pCharUbxSettingsProfile->setCallbacks(&ubxSettingsProfileCallbacks);
+  refreshUbxSettingsProfileCharacteristic();
+
+  pCharUbxCustomProfile = pService->createCharacteristic(
+      CHAR_UBX_CUSTOM_PROFILE_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  pCharUbxCustomProfile->setCallbacks(&ubxCustomProfileCallbacks);
+  refreshCustomProfileCommandCharacteristic();
+
+  pCharUbxCustomSettings = pService->createCharacteristic(
+      CHAR_UBX_CUSTOM_SETTINGS_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  pCharUbxCustomSettings->setCallbacks(&ubxCustomSettingsCallbacks);
+  refreshCustomSettingsCommandCharacteristic();
 
   pCharBuildVersion = pService->createCharacteristic(
       CHAR_BUILD_VERSION_UUID,
@@ -462,6 +561,14 @@ void updateUbxProfileCharacteristic(UbxConfigProfile profile) {
   ubxProfileStateValue = static_cast<uint8_t>(ubxProfileToChar(profile));
   if (pCharUbxProfile) {
     pCharUbxProfile->setValue(&ubxProfileStateValue, 1);
+  }
+}
+
+void updateUbxSettingsProfileCharacteristic(UbxSettingsProfile profile) {
+  ubxSettingsProfileStateValue =
+      static_cast<uint8_t>(ubxSettingsProfileToChar(profile));
+  if (pCharUbxSettingsProfile) {
+    pCharUbxSettingsProfile->setValue(&ubxSettingsProfileStateValue, 1);
   }
 }
 

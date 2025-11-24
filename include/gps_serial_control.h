@@ -2,6 +2,7 @@
 #define GPS_SERIAL_CONTROL_H
 
 #include <stdint.h>
+#include <string>
 
 #include "ubx_command_set.h"
 
@@ -12,5 +13,11 @@ uint32_t getGpsSerialBaud();
 bool setGpsSerialBaud(uint32_t baud);
 UbxConfigProfile getGpsUbxProfile();
 bool setGpsUbxProfile(UbxConfigProfile profile);
+UbxSettingsProfile getGpsUbxSettingsProfile();
+bool setGpsUbxSettingsProfile(UbxSettingsProfile profile);
+bool setGpsCustomProfileCommand(const std::string &hex);
+bool setGpsCustomSettingsCommand(const std::string &hex);
+std::string getGpsCustomProfileCommand();
+std::string getGpsCustomSettingsCommand();
 
 #endif

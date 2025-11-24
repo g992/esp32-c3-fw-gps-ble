@@ -19,8 +19,6 @@ FirmwareApp &firmwareApp() {
 void FirmwareApp::begin() {
   pinMode(5, OUTPUT);
   digitalWrite(5, HIGH);
-  pinMode(10, OUTPUT);
-  digitalWrite(10, LOW);
   Serial.begin(115200);
   initSystemMode();
   logPrintln("[sys] Booting firmware...");
@@ -30,6 +28,7 @@ void FirmwareApp::begin() {
   initBLE();
   configurePublishers();
   initStatusLED();
+  initModeLED();
   initWifiManager(onWifiApStateChanged);
   updateApControlCharacteristic(wifiManagerIsApActive());
 
@@ -41,6 +40,8 @@ void FirmwareApp::tick() {
   otaTick();
   gpsController().loop();
   updateStatusLED();
+  updateModeLED(isSerialPassthroughMode(), otaUpdateInProgress(),
+                wifiManagerIsConnected());
   bleTick();
   processPendingRestart();
 }

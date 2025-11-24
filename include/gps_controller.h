@@ -15,6 +15,8 @@ public:
   uint32_t baud() const;
   bool setUbxProfile(UbxConfigProfile profile);
   UbxConfigProfile ubxProfile() const;
+  bool setUbxSettingsProfile(UbxSettingsProfile profile);
+  UbxSettingsProfile ubxSettingsProfile() const;
   void addNavPublisher(NavDataPublisher *publisher);
   void addStatusPublisher(SystemStatusPublisher *publisher);
 
@@ -30,11 +32,16 @@ private:
   bool verifyUbxProfile(UbxConfigProfile profile);
   UbxConfigProfile loadStoredUbxProfile();
   void persistUbxProfile(UbxConfigProfile profile);
+  UbxSettingsProfile loadStoredUbxSettingsProfile();
+  void persistUbxSettingsProfile(UbxSettingsProfile profile);
+  void loadStoredCustomCommands();
   bool applyUbxProfile(UbxConfigProfile profile);
 
   GpsRuntimeState state;
   uint32_t gpsSerialBaudValue = 0;
   UbxConfigProfile currentProfile = UbxConfigProfile::FullSystems;
+  UbxSettingsProfile currentSettingsProfile =
+      UbxSettingsProfile::DefaultRamBbr;
   bool parserEnabled = false;
   uint8_t prevFix = 255;
   int prevHdop10 = -1;

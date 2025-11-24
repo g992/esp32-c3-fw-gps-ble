@@ -23,14 +23,33 @@ enum class UbxConfigProfile : uint8_t {
   FullSystems = 0,
   GlonassBeiDouGalileo = 1,
   GlonassOnly = 2,
+  Custom = 3,
 };
 
-constexpr size_t kUbxConfigProfileCount = 3;
+enum class UbxSettingsProfile : uint8_t {
+  DefaultRamBbr = 0,
+  CustomRam = 1,
+};
+
+constexpr size_t kUbxConfigProfileCount = 4;
+constexpr size_t kUbxSettingsProfileCount = 2;
+constexpr size_t kMaxUbxCustomCommandSize = 256;
 
 extern const UbxBinaryCommand kUbxPingCommand;
 extern const UbxCommandSequence kUbxDisableNmeaSequence;
 extern const UbxCommandSequence kUbxEnableNmeaSequence;
 extern const UbxCommandSequence kUbxDefaultSettingsSequence;
+
+const UbxCommandSequence &ubxSettingsSequence(UbxSettingsProfile profile);
+bool setCustomUbxSettingsCommand(const uint8_t *data, size_t size);
+bool hasCustomUbxSettingsCommand();
+size_t copyCustomUbxSettingsCommand(uint8_t *buffer, size_t capacity);
+
+bool setCustomUbxProfileCommand(const uint8_t *data, size_t size);
+bool hasCustomUbxProfileCommand();
+size_t copyCustomUbxProfileCommand(uint8_t *buffer, size_t capacity);
+
+const char *ubxSettingsProfileName(UbxSettingsProfile profile);
 
 const UbxCommandSequence &ubxProfileSequence(UbxConfigProfile profile);
 const UbxKeyValue *ubxProfileValidationTargets(UbxConfigProfile profile,
@@ -38,5 +57,8 @@ const UbxKeyValue *ubxProfileValidationTargets(UbxConfigProfile profile,
 const char *ubxProfileName(UbxConfigProfile profile);
 char ubxProfileToChar(UbxConfigProfile profile);
 bool ubxProfileFromChar(char value, UbxConfigProfile &profileOut);
+char ubxSettingsProfileToChar(UbxSettingsProfile profile);
+bool ubxSettingsProfileFromChar(char value,
+                                UbxSettingsProfile &profileOut);
 
 #endif

@@ -20,6 +20,12 @@ static const char *CHAR_GPS_BAUD_UUID =
     "f3a1a816-28f2-4b6d-9f76-6f7aa2d06123";
 static const char *CHAR_UBX_PROFILE_UUID =
     "1fd95e59-993e-4bf5-a0b7-f481508c9a94";
+static const char *CHAR_UBX_SETTINGS_PROFILE_UUID =
+    "7f0c9ad9-c6e8-4d2a-b3c1-1703708c6c2d";
+static const char *CHAR_UBX_CUSTOM_PROFILE_UUID =
+    "0abf4f57-12a2-47d9-9c61-96e0d47f332b";
+static const char *CHAR_UBX_CUSTOM_SETTINGS_UUID =
+    "4b88f5a8-3b35-4c64-a241-0c7fdfced0e0";
 static const char *CHAR_KEEPALIVE_UUID =
     "6b5d5304-4523-4db4-9a31-0f3d88c2ce11";
 static const char *CHAR_BUILD_VERSION_UUID =
@@ -32,6 +38,9 @@ extern NimBLECharacteristic *pCharApControl;
 extern NimBLECharacteristic *pCharModeControl;
 extern NimBLECharacteristic *pCharGpsBaud;
 extern NimBLECharacteristic *pCharUbxProfile;
+extern NimBLECharacteristic *pCharUbxSettingsProfile;
+extern NimBLECharacteristic *pCharUbxCustomProfile;
+extern NimBLECharacteristic *pCharUbxCustomSettings;
 extern NimBLECharacteristic *pCharBuildVersion;
 
 extern NimBLEServer *pServer;
@@ -41,6 +50,7 @@ void updateApControlCharacteristic(bool apActive);
 void updatePassthroughModeCharacteristic();
 void updateGpsBaudCharacteristic(uint32_t baud);
 void updateUbxProfileCharacteristic(UbxConfigProfile profile);
+void updateUbxSettingsProfileCharacteristic(UbxSettingsProfile profile);
 
 NavDataPublisher *bleNavPublisher();
 SystemStatusPublisher *bleStatusPublisher();

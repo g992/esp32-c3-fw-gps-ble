@@ -7,6 +7,36 @@ StatusIndicator &statusIndicator() {
   return instance;
 }
 
+namespace {
+class ModeIndicator {
+public:
+  void begin();
+  void update(bool passthroughActive, bool otaInProgress,
+              bool wifiConnected);
+
+private:
+  enum class ModeState : uint8_t {
+    Off = 0,
+    Passthrough,
+    Ota,
+    Wifi,
+  };
+
+  void writeLed(bool on);
+  ModeState chooseState(bool passthroughActive, bool otaInProgress,
+                        bool wifiConnected) const;
+
+  ModeState currentState = ModeState::Off;
+  bool ledOn = false;
+  unsigned long lastToggle = 0;
+};
+
+ModeIndicator &modeIndicator() {
+  static ModeIndicator instance;
+  return instance;
+}
+} // namespace
+
 void StatusIndicator::begin() {
   pinMode(LED_STATUS_PIN, OUTPUT);
   digitalWrite(LED_STATUS_PIN, HIGH);
@@ -137,9 +167,88 @@ uint8_t StatusIndicator::status() const { return currentStatusValue; }
 
 void initStatusLED() { statusIndicator().begin(); }
 
+void ModeIndicator::begin() {
+  pinMode(LED_MODE_PIN, OUTPUT);
+  digitalWrite(LED_MODE_PIN, HIGH);
+  currentState = ModeState::Off;
+  ledOn = false;
+  lastToggle = millis();
+}
+
+void ModeIndicator::writeLed(bool on) {
+  bool wantHigh = on ? false : true;
+  digitalWrite(LED_MODE_PIN, wantHigh ? HIGH : LOW);
+  ledOn = on;
+}
+
+ModeIndicator::ModeState ModeIndicator::chooseState(
+    bool passthroughActive, bool otaInProgress, bool wifiConnected) const {
+  if (passthroughActive)
+    return ModeState::Passthrough;
+  if (otaInProgress)
+    return ModeState::Ota;
+  if (wifiConnected)
+    return ModeState::Wifi;
+  return ModeState::Off;
+}
+
+void ModeIndicator::update(bool passthroughActive, bool otaInProgress,
+                           bool wifiConnected) {
+  ModeState desired =
+      chooseState(passthroughActive, otaInProgress, wifiConnected);
+  unsigned long now = millis();
+
+  if (desired != currentState) {
+    currentState = desired;
+    lastToggle = now;
+    switch (currentState) {
+    case ModeState::Passthrough:
+      writeLed(true);
+      return;
+    case ModeState::Ota:
+      writeLed(true);
+      return;
+    case ModeState::Wifi:
+      writeLed(true);
+      return;
+    case ModeState::Off:
+      writeLed(false);
+      return;
+    }
+  }
+
+  switch (currentState) {
+  case ModeState::Passthrough:
+    writeLed(true);
+    break;
+  case ModeState::Ota:
+    if (now - lastToggle >= 333) {
+      writeLed(!ledOn);
+      lastToggle = now;
+    }
+    break;
+  case ModeState::Wifi:
+    if (now - lastToggle >= 1000) {
+      writeLed(!ledOn);
+      lastToggle = now;
+    }
+    break;
+  case ModeState::Off:
+    writeLed(false);
+    break;
+  }
+}
+
+void initModeLED() { modeIndicator().begin(); }
+
 void setStatus(uint8_t status) { statusIndicator().setStatus(status); }
 
 void updateStatusLED() { statusIndicator().update(); }
+
+void updateModeLED(bool passthroughActive, bool otaInProgress,
+                   bool wifiConnected) {
+  modeIndicator().update(passthroughActive, otaInProgress, wifiConnected);
+}
 
 uint8_t getStatusIndicatorState() { return statusIndicator().status(); }
 
