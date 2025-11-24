@@ -4,6 +4,7 @@
 #include "gps_controller.h"
 #include "led_status.h"
 #include "logger.h"
+#include "ota_service.h"
 #include "system_mode.h"
 #include "wifi_manager.h"
 
@@ -37,6 +38,7 @@ void FirmwareApp::begin() {
 
 void FirmwareApp::tick() {
   updateWifiManager();
+  otaTick();
   gpsController().loop();
   updateStatusLED();
   bleTick();

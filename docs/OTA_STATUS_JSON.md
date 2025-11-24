@@ -1,5 +1,8 @@
 # OTA Status JSON Reference
 
+> Legacy: kept for the previous BLE chunked OTA flow. The current firmware
+> uses the ElegantOTA web page described in `README.md`/`BLE_PROTOCOL.md`.
+
 This reference enumerates the JSON documents that the OTA status characteristic
 (`d19d3c86-9ba9-4a52-9244-99118bd88d08`) emits so that Android/iOS clients know
 what to expect while coordinating updates.

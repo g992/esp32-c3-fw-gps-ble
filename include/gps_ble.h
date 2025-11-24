@@ -11,6 +11,7 @@
 static const char *GPS_SERVICE_UUID = "14f0514a-e15f-4ad3-89a6-b4cb3ac86abe";
 static const char *CHAR_NAVDATA_UUID = "12c64fea-7ed9-40be-9c7e-9912a5050d23";
 static const char *CHAR_STATUS_UUID = "3e4f5d6c-7b8a-9d0e-1f2a-3b4c5d6e7f8a";
+static const char *CHAR_WIFI_STATUS_UUID = "9b9a3f07-3a36-4c74-a48a-4ad0d68f1d39";
 static const char *CHAR_AP_CONTROL_UUID =
     "a37f8c1b-281d-4e15-8fb2-0b7e6ebd21c0";
 static const char *CHAR_MODE_CONTROL_UUID =
@@ -21,13 +22,17 @@ static const char *CHAR_UBX_PROFILE_UUID =
     "1fd95e59-993e-4bf5-a0b7-f481508c9a94";
 static const char *CHAR_KEEPALIVE_UUID =
     "6b5d5304-4523-4db4-9a31-0f3d88c2ce11";
+static const char *CHAR_BUILD_VERSION_UUID =
+    "c4e6f890-6b5e-4f1b-9d2e-7a3c8d2f1b01";
 
 extern NimBLECharacteristic *pCharNavData;
 extern NimBLECharacteristic *pCharStatus;
+extern NimBLECharacteristic *pCharWifiStatus;
 extern NimBLECharacteristic *pCharApControl;
 extern NimBLECharacteristic *pCharModeControl;
 extern NimBLECharacteristic *pCharGpsBaud;
 extern NimBLECharacteristic *pCharUbxProfile;
+extern NimBLECharacteristic *pCharBuildVersion;
 
 extern NimBLEServer *pServer;
 

@@ -6,22 +6,24 @@
 #include "ota_service.h"
 #include "system_mode.h"
 #include "wifi_manager.h"
+#include "build_version.h"
 #include <Arduino.h>
 
 NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
+NimBLECharacteristic *pCharWifiStatus = nullptr;
 NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
 NimBLECharacteristic *pCharGpsBaud = nullptr;
 NimBLECharacteristic *pCharUbxProfile = nullptr;
 NimBLECharacteristic *pCharKeepAlive = nullptr;
+NimBLECharacteristic *pCharBuildVersion = nullptr;
 
 NimBLEServer *pServer = nullptr;
 
 static bool bleConnected = false;
 static uint16_t currentConnHandle = 0xFFFF;
 static unsigned long lastKeepAliveMillis = 0;
-static bool keepAliveTimeoutPaused = false;
 static constexpr unsigned long kKeepAliveTimeoutMs = 10000;
 
 static constexpr float kLatLonEps = 1e-5f;
@@ -32,6 +34,39 @@ static constexpr float kAltEps = 0.5f;
 static uint8_t apStateValue = '0';
 static uint8_t modeStateValue = '0';
 static uint8_t ubxProfileStateValue = '0';
+
+static const char *wifiStateToString(WifiConnectionState state) {
+  switch (state) {
+  case WifiConnectionState::Connected:
+    return "connected";
+  case WifiConnectionState::Connecting:
+    return "connecting";
+  default:
+    return "disconnected";
+  }
+}
+
+static void refreshWifiStatusCharacteristic() {
+  if (!pCharWifiStatus)
+    return;
+
+  WifiStatusInfo status = wifiManagerGetStatus();
+  const char *stateLabel = wifiStateToString(status.state);
+
+  char buffer[80];
+  int len = 0;
+  if (status.ip.length() > 0) {
+    len = snprintf(buffer, sizeof(buffer),
+                   "{\"st\":\"%s\",\"ip\":\"%s\"}", stateLabel,
+                   status.ip.c_str());
+  } else {
+    len = snprintf(buffer, sizeof(buffer), "{\"st\":\"%s\"}", stateLabel);
+  }
+
+  if (len > 0) {
+    pCharWifiStatus->setValue(reinterpret_cast<uint8_t *>(buffer), len);
+  }
+}
 
 class BleDataPublisher : public NavDataPublisher, public SystemStatusPublisher {
 public:
@@ -87,6 +122,14 @@ static void refreshUbxProfileCharacteristic() {
   UbxConfigProfile profile = getGpsUbxProfile();
   ubxProfileStateValue = static_cast<uint8_t>(ubxProfileToChar(profile));
   pCharUbxProfile->setValue(&ubxProfileStateValue, 1);
+}
+
+static void refreshBuildVersionCharacteristic() {
+  if (!pCharBuildVersion)
+    return;
+  const char *version = BUILD_VERSION;
+  pCharBuildVersion->setValue(reinterpret_cast<const uint8_t *>(version),
+                              strlen(version));
 }
 
 static void setGpsBaudCharacteristicValue(uint32_t baud) {
@@ -165,6 +208,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         pCharStatus->notify();
       }
     }
+    refreshWifiStatusCharacteristic();
     refreshApControlCharacteristic();
     refreshModeCharacteristic();
     refreshGpsBaudCharacteristic();
@@ -179,7 +223,6 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleConnected = false;
     currentConnHandle = 0xFFFF;
     lastKeepAliveMillis = 0;
-    keepAliveTimeoutPaused = false;
     otaHandleBleDisconnect();
     if (pServer) {
       pServer->startAdvertising();
@@ -195,6 +238,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 class GeneralChrCallbacks : public NimBLECharacteristicCallbacks {
 
 } generalChrCallbacks;
+
+class WifiStatusCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic *) { refreshWifiStatusCharacteristic(); }
+} wifiStatusCallbacks;
 
 class ApControlCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *characteristic) {
@@ -294,6 +341,11 @@ void initBLE() {
       CHAR_STATUS_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pCharStatus->setCallbacks(&generalChrCallbacks);
 
+  pCharWifiStatus = pService->createCharacteristic(
+      CHAR_WIFI_STATUS_UUID, NIMBLE_PROPERTY::READ);
+  pCharWifiStatus->setCallbacks(&wifiStatusCallbacks);
+  refreshWifiStatusCharacteristic();
+
   pCharApControl = pService->createCharacteristic(
       CHAR_AP_CONTROL_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
   pCharApControl->setCallbacks(&apControlCallbacks);
@@ -315,17 +367,21 @@ void initBLE() {
   pCharUbxProfile->setCallbacks(&ubxProfileCallbacks);
   refreshUbxProfileCharacteristic();
 
+  pCharBuildVersion = pService->createCharacteristic(
+      CHAR_BUILD_VERSION_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  refreshBuildVersionCharacteristic();
+
   pCharKeepAlive = pService->createCharacteristic(CHAR_KEEPALIVE_UUID,
                                                   NIMBLE_PROPERTY::WRITE);
   pCharKeepAlive->setCallbacks(&keepAliveCallbacks);
 
+  initOtaService(pService);
   pService->start();
-  initOtaService(pServer);
 
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->setName("GPS-C3");
   pAdvertising->addServiceUUID(GPS_SERVICE_UUID);
-  pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
   pAdvertising->setScanResponse(false);
   pAdvertising->setMinInterval(0x0800);
   pAdvertising->setMaxInterval(0x1000);
@@ -424,16 +480,6 @@ void bleTick() {
     return;
   if (currentConnHandle == 0xFFFF)
     return;
-
-  bool otaActive = otaSessionActive();
-  if (otaActive) {
-    keepAliveTimeoutPaused = true;
-    return;
-  }
-  if (keepAliveTimeoutPaused) {
-    keepAliveTimeoutPaused = false;
-    lastKeepAliveMillis = millis();
-  }
 
   unsigned long now = millis();
   if (lastKeepAliveMillis != 0 &&

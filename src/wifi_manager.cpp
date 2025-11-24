@@ -2,6 +2,10 @@
 
 #include "gps_config.h"
 #include "logger.h"
+#include "ota_service.h"
+#include "web_index.h"
+#include "web_portal.h"
+#include "build_version.h"
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
@@ -56,6 +60,16 @@ unsigned long scheduleApStopAt = 0;
 String apSsid;
 
 wl_status_t lastWifiStatus = WL_NO_SHIELD;
+
+void ensureApSsid() {
+  if (!apSsid.isEmpty()) {
+    return;
+  }
+  uint32_t chipId = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "GPS-C3-%06X", chipId);
+  apSsid = buf;
+}
 
 struct NavSnapshot {
   bool valid = false;
@@ -324,126 +338,6 @@ void serviceTcpClients(unsigned long now) {
   }
 }
 
-const char portalPage[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>Настройка Wi‑Fi GPS BLE</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body{font-family:Arial,sans-serif;margin:16px;padding:0;background:#f4f5f7;color:#222;}
-h1{font-size:1.6rem;margin-bottom:0.5rem;}
-section{background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08);padding:16px;margin-bottom:16px;}
-label{display:block;margin:12px 0 4px;}
-input,select,button{font-size:1rem;padding:8px;width:100%;box-sizing:border-box;margin-bottom:8px;}
-button{background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;}
-button:disabled{background:#9ab9e2;cursor:not-allowed;}
-.note{font-size:0.9rem;color:#555;margin-top:8px;}
-.ssid-option{font-size:0.95rem;}
-</style>
-</head>
-<body>
-<h1>Настройка Wi‑Fi</h1>
-<section>
-  <p id="statusText">Загрузка статуса...</p>
-</section>
-<section>
-  <form id="wifiForm">
-    <label for="ssidSelect">Доступные сети</label>
-    <select id="ssidSelect">
-      <option value="">-- выберите сеть --</option>
-    </select>
-    <label for="ssidInput">SSID</label>
-    <input id="ssidInput" name="ssid" type="text" placeholder="Название сети" required>
-    <label for="passwordInput">Пароль</label>
-    <input id="passwordInput" name="password" type="password" placeholder="Пароль сети">
-    <button type="submit">Сохранить и подключиться</button>
-    <p class="note">Новые данные заменят предыдущую сеть. После сохранения устройство перезапустит Wi‑Fi.</p>
-  </form>
-</section>
-<section>
-  <button id="refreshBtn">Повторить сканирование</button>
-</section>
-<script>
-async function loadStatus(){
-  try{
-    const res=await fetch('/status');
-    const data=await res.json();
-    let text='';
-    if(data.connected){
-      text=`Подключено к ${data.ssid} (IP ${data.ip})`;
-    }else if(data.hasCredentials){
-      text=`Сохранена сеть ${data.configuredSsid}, выполняется подключение...`;
-    }else{
-      text='Сохраненные сети отсутствуют.';
-    }
-    if(data.ap){
-      text+=' | Активен режим точки доступа';
-    }
-    document.getElementById('statusText').innerText=text;
-  }catch(e){
-    document.getElementById('statusText').innerText='Не удалось получить статус.';
-  }
-}
-
-function optionLabel(item){
-  const secure = item.secure ? 'защищена' : 'открытая';
-  return `${item.ssid} (${item.rssi} дБм, ${secure})`;
-}
-
-async function loadNetworks(){
-  const select=document.getElementById('ssidSelect');
-  select.innerHTML='<option value="">-- выберите сеть --</option>';
-  try{
-    const res=await fetch('/networks');
-    const data=await res.json();
-    data.forEach((ap)=>{
-      const opt=document.createElement('option');
-      opt.value=ap.ssid;
-      opt.textContent=optionLabel(ap);
-      opt.className='ssid-option';
-      select.appendChild(opt);
-    });
-  }catch(e){
-    const opt=document.createElement('option');
-    opt.value='';
-    opt.textContent='Не удалось выполнить сканирование';
-    select.appendChild(opt);
-  }
-}
-
-document.getElementById('ssidSelect').addEventListener('change',(event)=>{
-  document.getElementById('ssidInput').value=event.target.value || '';
-});
-
-document.getElementById('wifiForm').addEventListener('submit',async(event)=>{
-  event.preventDefault();
-  const form=new FormData(event.target);
-  const params=new URLSearchParams();
-  params.set('ssid',form.get('ssid')||'');
-  params.set('password',form.get('password')||'');
-  const res=await fetch('/configure',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:params.toString()});
-  const text=await res.text();
-  document.getElementById('statusText').innerText=text;
-  setTimeout(loadStatus,2000);
-});
-
-document.getElementById('refreshBtn').addEventListener('click',async()=>{
-  document.getElementById('statusText').innerText='Сканирование...';
-  await loadNetworks();
-  await loadStatus();
-});
-
-window.addEventListener('load',async()=>{
-  await loadStatus();
-  await loadNetworks();
-});
-</script>
-</body>
-</html>
-)rawliteral";
-
 String escapeJson(const String &value) {
   String escaped;
   escaped.reserve(value.length() + 4);
@@ -532,6 +426,7 @@ const char *wifiStatusToString(wl_status_t status) {
   }
 }
 
+
 void startMdns() {
   if (mdnsStarted) {
     return;
@@ -590,125 +485,11 @@ String floatToString(float value, uint8_t decimals = 2) {
 }
 
 void sendStationPage() {
-  String html;
-  html.reserve(1024);
-  html +=
-      F("<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta "
-        "name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-  html +=
-      F("<title>Состояние "
-        "GPS</"
-        "title><style>body{font-family:Arial,sans-serif;margin:16px;background:"
-        "#f4f5f7;color:#222;}h1{font-size:1.6rem;margin-bottom:12px;}h2{font-"
-        "size:1.2rem;margin:0 0 "
-        "8px;}section{background:#fff;border-radius:8px;box-shadow:0 2px 8px "
-        "rgba(0,0,0,0.08);padding:16px;margin-bottom:16px;}table{width:100%;"
-        "border-collapse:collapse;}th,td{text-align:left;padding:6px "
-        "4px;}th{width:40%;color:#666;}p{margin:8px "
-        "0;}small{color:#666;}</style></head><body>");
-  html += F("<h1>GPS устройство</h1>");
-
-  html += F("<section><h2>Подключение</h2>");
-  wl_status_t status = WiFi.status();
-  html += F("<p>Статус: <strong>");
-  html += wifiStatusToString(status);
-  html += F("</strong></p>");
-  if (status == WL_CONNECTED) {
-    html += F("<p>SSID: <strong>");
-    html += htmlEscape(WiFi.SSID());
-    html += F("</strong></p><p>IP: <strong>");
-    html += WiFi.localIP().toString();
-    html += F("</strong></p>");
-  }
-  html += F("</section>");
-
-  html += F("<section><h2>Навигация</h2>");
-  if (navSnapshot.valid) {
-    html += F("<table><tr><th>Широта</th><td>");
-    html += floatToString(navSnapshot.latitude, 6);
-    html += F("</td></tr><tr><th>Долгота</th><td>");
-    html += floatToString(navSnapshot.longitude, 6);
-    html += F("</td></tr><tr><th>Высота</th><td>");
-    html += floatToString(navSnapshot.altitude, 1);
-    html += F(" м</td></tr><tr><th>Скорость</th><td>");
-    html += floatToString(navSnapshot.speed, 2);
-    html += F(" м/с</td></tr><tr><th>Направление</th><td>");
-    html += floatToString(navSnapshot.heading, 1);
-    html += F(" &deg;</td></tr></table><small>Обновлено ");
-    html += (millis() - navSnapshot.updatedAt) / 1000;
-    html += F(" с назад</small>");
-  } else {
-    html += F("<p>Навигационный фикс отсутствует.</p>");
-  }
-  html += F("</section>");
-
-  html += F("<section><h2>Параметры фиксации</h2>");
-  if (statusSnapshot.valid) {
-    html += F("<table><tr><th>Фикс</th><td>");
-    html += statusSnapshot.fix ? F("Да") : F("Нет");
-    html += F("</td></tr><tr><th>HDOP</th><td>");
-    html += floatToString(statusSnapshot.hdop, 1);
-    html += F("</td></tr><tr><th>TTFF</th><td>");
-    if (statusSnapshot.ttffSeconds >= 0) {
-      html += String(statusSnapshot.ttffSeconds);
-      html += F(" с");
-    } else {
-      html += F("н/д");
-    }
-    html += F("</td></tr>");
-    if (statusSnapshot.signals.length()) {
-      html += F("<tr><th>Уровни сигналов</th><td>");
-      html += htmlEscape(statusSnapshot.signals);
-      html += F("</td></tr>");
-    }
-    html += F("</table><small>Обновлено ");
-    html += (millis() - statusSnapshot.updatedAt) / 1000;
-    html += F(" с назад</small>");
-  } else {
-    html += F("<p>Отчеты о статусе отсутствуют.</p>");
-  }
-  html += F("</section>");
-
-  String mapLat;
-  String mapLon;
-  const char *mapZoom = "15";
-  bool mapHasPosition = navSnapshot.valid;
-  if (mapHasPosition) {
-    mapLat = floatToString(navSnapshot.latitude, 6);
-    mapLon = floatToString(navSnapshot.longitude, 6);
-  }
-  mapLat.trim();
-  mapLon.trim();
-
-  html += F("<section><h2>Карта</h2>");
-  if (!mapHasPosition) {
-    html += F("<p>Текущее местоположение недоступно. Показана карта по "
-              "умолчанию.</p>");
-  }
-  html += F("<div style=\"position:relative;overflow:hidden;\"><iframe "
-            "src=\"https://yandex.ru/map-widget/v1/?ll=");
-  html += mapLon;
-  html += F("%2C");
-  html += mapLat;
-  html += F("&z=");
-  html += mapZoom;
-  if (mapHasPosition) {
-    html += F("&pt=");
-    html += mapLon;
-    html += F("%2C");
-    html += mapLat;
-    html += F(",pm2rdm");
-  }
-  html += F("\" width=\"560\" height=\"400\" frameborder=\"1\" "
-            "allowfullscreen=\"true\" "
-            "style=\"position:relative;\"></iframe></div></section>");
-
-  html +=
-      F("<section><p>Доступ к устройству по адресу <strong>gps.local</strong>, "
-        "находясь в той же сети.</p></section>");
-  html += F("</body></html>");
-
-  webServer.send(200, "text/html", html);
+  webServer.sendHeader("Content-Encoding", "gzip");
+  webServer.sendHeader("Cache-Control", "no-cache");
+  webServer.send_P(200, "text/html",
+                   reinterpret_cast<const char *>(WEB_INDEX_HTML),
+                   sizeof(WEB_INDEX_HTML));
 }
 
 void startAccessPoint(ApRequestSource source) {
@@ -720,12 +501,7 @@ void startAccessPoint(ApRequestSource source) {
     source = ApRequestSource::Button;
   }
 
-  if (apSsid.isEmpty()) {
-    uint32_t chipId = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "GPS-C3-%06X", chipId);
-    apSsid = buf;
-  }
+  ensureApSsid();
 
   bool apOnly = (source == ApRequestSource::Ble);
   if (apOnly || !storedCreds.valid) {
@@ -778,6 +554,11 @@ void stopAccessPoint() {
   }
 }
 
+String wifiManagerApSsid() {
+  ensureApSsid();
+  return apSsid;
+}
+
 bool ensureStationConnecting() {
   if (!storedCreds.valid) {
     return false;
@@ -806,7 +587,11 @@ bool ensureStationConnecting() {
 
 void handleRoot() {
   if (apActive) {
-    webServer.send_P(200, "text/html", portalPage);
+    webServer.sendHeader("Content-Encoding", "gzip");
+    webServer.sendHeader("Cache-Control", "no-cache");
+    webServer.send_P(200, "text/html",
+                     reinterpret_cast<const char *>(WEB_PORTAL_HTML),
+                     sizeof(WEB_PORTAL_HTML));
   } else {
     sendStationPage();
   }
@@ -840,6 +625,101 @@ void handleStatus() {
     json += escapeJson(storedCreds.ssid);
     json += "\"";
   }
+  ensureApSsid();
+  json += ",\"apSsid\":\"";
+  json += escapeJson(apSsid);
+  json += "\"";
+  json += ",\"apIp\":\"";
+  json += apIp.toString();
+  json += "\"";
+  json += ",\"build\":{";
+  json += "\"version\":\"";
+  json += BUILD_VERSION;
+  json += "\",\"timestamp\":\"";
+  json += BUILD_TIMESTAMP;
+  json += "\"}";
+  json += "}";
+  webServer.send(200, "application/json", json);
+}
+
+void handleDeviceState() {
+  ensureApSsid();
+  String json = "{";
+
+  json += "\"wifi\":{";
+  json += "\"ap\":";
+  json += apActive ? "true" : "false";
+  json += ",\"apSsid\":\"";
+  json += escapeJson(apSsid);
+  json += "\"";
+  json += ",\"apIp\":\"";
+  json += apIp.toString();
+  json += "\"";
+  bool connected = WiFi.status() == WL_CONNECTED;
+  json += ",\"connected\":";
+  json += connected ? "true" : "false";
+  if (connected) {
+    json += ",\"ssid\":\"";
+    json += escapeJson(WiFi.SSID());
+    json += "\",\"ip\":\"";
+    json += WiFi.localIP().toString();
+    json += "\"";
+  }
+  json += "}";
+
+  json += ",\"build\":{";
+  json += "\"version\":\"";
+  json += BUILD_VERSION;
+  json += "\",\"timestamp\":\"";
+  json += BUILD_TIMESTAMP;
+  json += "\"}";
+
+  json += ",\"ota\":{";
+  json += "\"enabled\":";
+  json += otaUpdatesEnabled() ? "true" : "false";
+  json += ",\"inProgress\":";
+  json += otaUpdateInProgress() ? "true" : "false";
+  json += "}";
+
+  json += ",\"nav\":{";
+  json += "\"valid\":";
+  json += navSnapshot.valid ? "true" : "false";
+  if (navSnapshot.valid) {
+    json += ",\"lat\":";
+    json += floatToString(navSnapshot.latitude, 6);
+    json += ",\"lon\":";
+    json += floatToString(navSnapshot.longitude, 6);
+    json += ",\"alt\":";
+    json += floatToString(navSnapshot.altitude, 1);
+    json += ",\"speed\":";
+    json += floatToString(navSnapshot.speed, 2);
+    json += ",\"heading\":";
+    json += floatToString(navSnapshot.heading, 1);
+    json += ",\"age\":";
+    json += (millis() - navSnapshot.updatedAt) / 1000;
+  }
+  json += "}";
+
+  json += ",\"fix\":{";
+  json += "\"valid\":";
+  json += statusSnapshot.valid ? "true" : "false";
+  if (statusSnapshot.valid) {
+    json += ",\"fix\":";
+    json += statusSnapshot.fix ? "true" : "false";
+    json += ",\"hdop\":";
+    json += floatToString(statusSnapshot.hdop, 1);
+    json += ",\"ttff\":";
+    json += statusSnapshot.ttffSeconds;
+    json += ",\"sats\":";
+    json += statusSnapshot.satellites;
+    json += ",\"signals\":\"";
+    json += escapeJson(statusSnapshot.signals);
+    json += "\"";
+    json += ",\"age\":";
+    json += (millis() - statusSnapshot.updatedAt) / 1000;
+  }
+  json += "}";
+
   json += "}";
   webServer.send(200, "application/json", json);
 }
@@ -917,6 +797,7 @@ void handleNotFound() {
 void setupWebRoutes() {
   webServer.on("/", HTTP_ANY, handleRoot);
   webServer.on("/status", HTTP_GET, handleStatus);
+  webServer.on("/api/state", HTTP_GET, handleDeviceState);
   webServer.on("/networks", HTTP_GET, handleNetworks);
   webServer.on("/configure", HTTP_POST, handleConfigure);
   webServer.on("/generate_204", HTTP_GET, handleConnectivityCheck);
@@ -1105,6 +986,31 @@ bool wifiManagerIsApActive() { return apActive; }
 bool wifiManagerIsConnected() { return WiFi.status() == WL_CONNECTED; }
 
 bool wifiManagerHasCredentials() { return storedCreds.valid; }
+
+WebServer *wifiManagerHttpServer() { return &webServer; }
+
+WifiStatusInfo wifiManagerGetStatus() {
+  WifiStatusInfo info;
+  info.apActive = apActive;
+  wl_status_t status = WiFi.status();
+  if (status == WL_CONNECTED) {
+    info.state = WifiConnectionState::Connected;
+    String ip = WiFi.localIP().toString();
+    if (ip.length() > 0 && ip != "0.0.0.0") {
+      info.ip = ip;
+    }
+  } else if (apActive) {
+    info.ip = WiFi.softAPIP().toString();
+    if (info.ip == "0.0.0.0") {
+      info.ip.clear();
+    }
+  } else if (stationConnecting) {
+    info.state = WifiConnectionState::Connecting;
+  } else {
+    info.state = WifiConnectionState::Disconnected;
+  }
+  return info;
+}
 
 void WifiManagerPublisher::publishNavData(const NavDataSample &sample) {
   if (!gnssStreamingEnabled) {

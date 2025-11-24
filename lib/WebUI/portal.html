@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ru">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPS BLE • Настройка Wi‑Fi</title>
+  <style>
+    :root {
+      --bg: #0b1021;
+      --panel: rgba(255, 255, 255, 0.04);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #22d3ee;
+      --success: #10b981;
+      --warn: #f59e0b;
+      --card-radius: 16px;
+      --shadow: 0 12px 38px rgba(0, 0, 0, 0.35);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 12% 24%, rgba(34, 211, 238, 0.12), transparent 26%),
+        radial-gradient(circle at 88% 10%, rgba(16, 185, 129, 0.12), transparent 28%),
+        linear-gradient(140deg, #0b1021 0%, #0f172a 55%, #0c1024 100%);
+      color: var(--text);
+      font-family: "Manrope", "DM Sans", "SF Pro Display", "Inter", system-ui, -apple-system, sans-serif;
+      padding: 18px 16px 32px;
+    }
+
+    .shell {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .hero {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--card-radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    h1 {
+      margin: 4px 0 6px;
+      font-size: 1.9rem;
+      letter-spacing: -0.02em;
+    }
+
+    .eyebrow {
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--card-radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card:before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 70% 20%, rgba(34, 211, 238, 0.12), transparent 38%);
+      pointer-events: none;
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 1.1rem;
+      letter-spacing: -0.01em;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--panel-border);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.06);
+      font-size: 0.92rem;
+    }
+
+    .pill.good {
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #bbf7d0;
+      background: rgba(16, 185, 129, 0.16);
+    }
+
+    .pill.warn {
+      border-color: rgba(245, 158, 11, 0.5);
+      color: #fef3c7;
+      background: rgba(245, 158, 11, 0.14);
+    }
+
+    .list {
+      margin-top: 12px;
+      display: grid;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+      padding-bottom: 6px;
+    }
+
+    .row strong {
+      color: var(--text);
+    }
+
+    label {
+      display: block;
+      margin: 8px 0 6px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .input,
+    .select {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--panel-border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+      font-size: 1rem;
+    }
+
+    .button {
+      width: 100%;
+      margin-top: 12px;
+      background: linear-gradient(120deg, #22d3ee, #10b981);
+      color: #0b1021;
+      border: none;
+      border-radius: 12px;
+      padding: 12px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      cursor: pointer;
+      box-shadow: 0 10px 25px rgba(16, 185, 129, 0.25);
+      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 28px rgba(34, 211, 238, 0.25);
+    }
+
+    .button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-top: 8px;
+    }
+
+    .inline {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .inline button {
+      width: auto;
+    }
+
+    .badge {
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px dashed var(--panel-border);
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .alert {
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      background: rgba(245, 158, 11, 0.12);
+      color: #fcd34d;
+      font-size: 0.95rem;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 720px) {
+      h1 {
+        font-size: 1.7rem;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="shell">
+    <div class="hero">
+      <div class="eyebrow">настройка</div>
+      <h1>Подключение к Wi‑Fi</h1>
+      <p class="subtitle">Подключитесь к точке доступа устройства и выберите сеть, введите пароль и сохраните.</p>
+    </div>
+
+    <section class="grid two">
+      <article class="card">
+        <div
+          style="display:flex;justify-content:space-between;align-items:center;gap:10px;position:relative;z-index:1;">
+          <h2>Состояние</h2>
+          <span class="pill" id="statusBadge">—</span>
+        </div>
+        <div class="list">
+          <div class="row"><span>Режим</span><strong id="mode">AP</strong></div>
+          <div class="row"><span>SSID точки доступа</span><strong id="apSsid">—</strong></div>
+          <div class="row"><span>IP</span><strong id="apIp">—</strong></div>
+          <div class="row"><span>Сохранённая сеть</span><strong id="savedSsid">—</strong></div>
+        </div>
+        <div class="muted" id="statusText">Загрузка статуса...</div>
+      </article>
+
+      <article class="card">
+        <h2 style="position:relative;z-index:1;">Доступные сети</h2>
+        <label for="ssidSelect">Выберите сеть</label>
+        <select class="select" id="ssidSelect">
+          <option value="">-- сканирование --</option>
+        </select>
+        <div class="inline">
+          <button class="button" id="refreshBtn" type="button">Сканировать</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2 style="position:relative;z-index:1;">Подключение</h2>
+        <label for="ssidInput">SSID</label>
+        <input class="input" id="ssidInput" type="text" placeholder="Название сети" autocomplete="off" required />
+
+        <label for="passwordInput">Пароль</label>
+        <input class="input" id="passwordInput" type="password"
+          placeholder="Пароль (можно оставить пустым для открытой сети)" />
+
+        <button class="button" id="saveBtn" type="button">Сохранить и подключиться</button>
+        <div class="alert" id="alert" style="display:none;"></div>
+        <div class="muted">Данные перезапишут предыдущую сеть.</div>
+      </article>
+    </section>
+  </div>
+
+  <div class="muted" style="text-align:center;margin-top:16px;">GPS-C3 • <span id="footerVer">Build —</span></div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let buildVersion = "";
+
+    function setBadge(text, good = false, warn = false) {
+      const badge = $("statusBadge");
+      badge.textContent = text;
+      badge.className = "pill";
+      if (good) badge.classList.add("good");
+      else if (warn) badge.classList.add("warn");
+    }
+
+    function showAlert(text) {
+      const el = $("alert");
+      el.textContent = text;
+      el.style.display = "block";
+    }
+
+    function hideAlert() {
+      $("alert").style.display = "none";
+    }
+
+    async function loadStatus() {
+      try {
+        const res = await fetch("/status");
+        const data = await res.json();
+        if (data.build && data.build.version) {
+          buildVersion = data.build.version;
+          const footer = $("footerVer");
+          if (footer) {
+            footer.textContent = `Build ${buildVersion}`;
+          }
+        }
+        $("mode").textContent = data.ap ? "AP" : (data.connected ? "STA" : "—");
+        $("apSsid").textContent = data.ap ? (data.configuredSsid || "GPS AP") : "—";
+        $("apIp").textContent = data.ap ? (data.ip || "192.168.4.1") : "—";
+        $("savedSsid").textContent = data.hasCredentials ? data.configuredSsid : "—";
+        if (data.connected) {
+          $("statusText").textContent = `Подключено к ${data.ssid} (IP ${data.ip})`;
+        } else if (data.hasCredentials) {
+          $("statusText").textContent = `Сохранена сеть ${data.configuredSsid}, после отключения режима точки доступа устройство переключится на подключение к этой сети.`;
+        } else {
+          $("statusText").textContent = "Сохраненные сети отсутствуют.";
+        }
+      } catch (err) {
+        console.error(err);
+        $("statusText").textContent = "Не удалось получить статус.";
+        setBadge("Ошибка", false, true);
+      }
+    }
+
+    function optionLabel(item) {
+      const secure = item.secure ? "защищена" : "открытая";
+      return `${item.ssid} (${item.rssi} дБм, ${secure})`;
+    }
+
+    async function loadNetworks() {
+      const select = $("ssidSelect");
+      select.innerHTML = '<option value="">-- выберити сеть --</option>';
+      try {
+        const res = await fetch("/networks");
+        if (!res.ok) throw new Error("scan failed");
+        const data = await res.json();
+        if (data.length === 0) {
+          select.innerHTML = '<option value="">Сети не найдены</option>';
+          return;
+        }
+        data.forEach((ap) => {
+          const opt = document.createElement("option");
+          opt.value = ap.ssid;
+          opt.textContent = optionLabel(ap);
+          select.appendChild(opt);
+        });
+      } catch (err) {
+        select.innerHTML = '<option value="">Сканирование недоступно</option>';
+      }
+    }
+
+    $("ssidSelect").addEventListener("change", (event) => {
+      $("ssidInput").value = event.target.value || "";
+    });
+
+    $("refreshBtn").addEventListener("click", async () => {
+      $("scanHint").textContent = "Сканирование...";
+      await loadNetworks();
+      $("scanHint").textContent = "Готово";
+    });
+
+    $("saveBtn").addEventListener("click", async () => {
+      hideAlert();
+      const ssid = $("ssidInput").value.trim();
+      const password = $("passwordInput").value;
+      if (!ssid) {
+        showAlert("Укажите SSID.");
+        return;
+      }
+      const body = new URLSearchParams();
+      body.set("ssid", ssid);
+      body.set("password", password);
+      $("saveBtn").disabled = true;
+      try {
+        const res = await fetch("/configure", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        });
+        const text = await res.text();
+        showAlert(text);
+        await loadStatus();
+      } catch (err) {
+        showAlert("Не удалось отправить данные.");
+      } finally {
+        $("saveBtn").disabled = false;
+      }
+    });
+
+    window.addEventListener("load", () => {
+      loadStatus();
+      loadNetworks();
+    });
+  </script>
+</body>
+
+</html>
