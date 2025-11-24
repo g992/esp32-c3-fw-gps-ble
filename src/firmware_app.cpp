@@ -17,8 +17,13 @@ FirmwareApp &firmwareApp() {
 }
 
 void FirmwareApp::begin() {
-  pinMode(5, OUTPUT);
+  pinMode(5, OUTPUT); // rf switch
   digitalWrite(5, HIGH);
+  pinMode(2, OUTPUT); // usb power
+  digitalWrite(2, HIGH);
+  pinMode(GPS_EN, OUTPUT); // gps en
+  digitalWrite(GPS_EN, HIGH);
+
   Serial.begin(115200);
   initSystemMode();
   logPrintln("[sys] Booting firmware...");

@@ -6,6 +6,8 @@
 #define GPS_RX 3  // Вывод ESP RX к выходу TX GPS
 #define GPS_EN 7  // Вывод включения питания GPS
 #define GPS_PPS 6 // Вывод синхросигнала PPS
+#define VIN_SENSE_PIN                                                        \
+  1 // IO1, делитель питания 100k к VCC и 12.1k к GND (ADC)
 
 // Пины индикации
 #define LED_STATUS_PIN 8 // Светодиод статуса с инверсным управлением

@@ -1,6 +1,7 @@
 #include "gps_ble.h"
 #include "data_channel.h"
 #include "firmware_app.h"
+#include "gps_config.h"
 #include "gps_serial_control.h"
 #include "logger.h"
 #include "ota_service.h"
@@ -11,6 +12,7 @@
 
 NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
+NimBLECharacteristic *pCharInputVoltage = nullptr;
 NimBLECharacteristic *pCharWifiStatus = nullptr;
 NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
@@ -33,6 +35,18 @@ static constexpr float kLatLonEps = 1e-5f;
 static constexpr float kHeadingEps = 1.0f;
 static constexpr float kSpeedEps = 0.2f;
 static constexpr float kAltEps = 0.5f;
+
+static constexpr uint8_t kVoltageSensePin = VIN_SENSE_PIN;
+static constexpr float kVoltageDividerTopOhms = 100000.0f;
+static constexpr float kVoltageDividerBottomOhms = 12100.0f;
+static constexpr float kVoltageDividerGain =
+    (kVoltageDividerTopOhms + kVoltageDividerBottomOhms) /
+    kVoltageDividerBottomOhms;
+static constexpr float kVoltageOffsetVolts = 0.3f; // compensate Schottky drop
+static constexpr unsigned long kVoltageUpdateIntervalMs = 1000;
+
+static float lastVoltageVolts = 0.0f;
+static unsigned long lastVoltageSampleMs = 0;
 
 static uint8_t apStateValue = '0';
 static uint8_t modeStateValue = '0';
@@ -87,6 +101,39 @@ private:
 };
 
 static BleDataPublisher gBlePublisher;
+
+static float readInputVoltage() {
+  uint32_t senseMv = analogReadMilliVolts(kVoltageSensePin);
+  float senseVolts = static_cast<float>(senseMv) / 1000.0f;
+  return senseVolts * kVoltageDividerGain + kVoltageOffsetVolts;
+}
+
+static void refreshInputVoltageCharacteristic(bool forceNotify) {
+  if (!pCharInputVoltage)
+    return;
+
+  unsigned long now = millis();
+  bool shouldSample = lastVoltageSampleMs == 0 ||
+                      now - lastVoltageSampleMs >= kVoltageUpdateIntervalMs;
+
+  if (shouldSample) {
+    lastVoltageVolts = readInputVoltage();
+    lastVoltageSampleMs = now;
+  } else if (!forceNotify) {
+    return;
+  }
+
+  char buffer[24];
+  int len = snprintf(buffer, sizeof(buffer), "{\"vin\":%.2f}",
+                     static_cast<double>(lastVoltageVolts));
+  if (len <= 0)
+    return;
+
+  pCharInputVoltage->setValue(reinterpret_cast<uint8_t *>(buffer), len);
+  if (bleConnected) {
+    pCharInputVoltage->notify();
+  }
+}
 
 static void setGpsBaudCharacteristicValue(uint32_t baud);
 
@@ -243,6 +290,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     refreshUbxSettingsProfileCharacteristic();
     refreshCustomProfileCommandCharacteristic();
     refreshCustomSettingsCommandCharacteristic();
+    refreshInputVoltageCharacteristic(true);
   }
 
   void onConnect(NimBLEServer *server) override { onConnect(server, nullptr); }
@@ -409,6 +457,9 @@ void initBLE() {
   NimBLEDevice::setCustomGapHandler(bleGapEventHandler);
   NimBLEDevice::setCustomGapHandler(bleGapEventHandler);
 
+  pinMode(kVoltageSensePin, INPUT);
+  analogSetPinAttenuation(kVoltageSensePin, ADC_11db);
+
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(&serverCallbacks);
 
@@ -421,6 +472,12 @@ void initBLE() {
   pCharStatus = pService->createCharacteristic(
       CHAR_STATUS_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pCharStatus->setCallbacks(&generalChrCallbacks);
+
+  pCharInputVoltage = pService->createCharacteristic(
+      CHAR_INPUT_VOLTAGE_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pCharInputVoltage->setCallbacks(&generalChrCallbacks);
+  refreshInputVoltageCharacteristic(true);
 
   pCharWifiStatus = pService->createCharacteristic(
       CHAR_WIFI_STATUS_UUID, NIMBLE_PROPERTY::READ);
@@ -587,6 +644,8 @@ void bleTick() {
     return;
   if (currentConnHandle == 0xFFFF)
     return;
+
+  refreshInputVoltageCharacteristic(false);
 
   unsigned long now = millis();
   if (lastKeepAliveMillis != 0 &&

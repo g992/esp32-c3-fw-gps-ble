@@ -11,6 +11,9 @@
 - `3e4f5d6c-7b8a-9d0e-1f2a-3b4c5d6e7f8a` (`READ`, `NOTIFY`) — system status
   - JSON payload `{"fix":<0|1>,"hdop":<value>,"signals":[...],"ttff":<seconds>}`.
   - `signals` is an array of ASCII digits where `'1'`/`'2'`/`'3'` stand for weak/medium/strong SNR buckets of tracked satellites. `ttff` is `-1` until the first fix is acquired.
+- `81b2c6f8-cb9e-4069-9a2e-9e5abca5d56e` (`READ`, `NOTIFY`) — input voltage (VIN)
+  - JSON payload `{"vin":<volts>}` derived from the IO1 divider (100k to VCC, 12.1k to GND) and represents the voltage before the divider with an added 0.3 V offset to compensate the Schottky diode drop.
+  - Sampled once per second; notifications fire on each refresh while a client is connected.
 - `9b9a3f07-3a36-4c74-a48a-4ad0d68f1d39` (`READ`) — Wi-Fi status
   - JSON payload `{"st":"connected|connecting|disconnected","ip":"<optional ip>"}`.
   - `ip` is present when a station link is connected or when the built-in AP is active; it carries the reachable IPv4 address for the device.
