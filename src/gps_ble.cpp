@@ -9,6 +9,7 @@
 #include "wifi_manager.h"
 #include "build_version.h"
 #include <Arduino.h>
+#include <string>
 
 NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
@@ -90,6 +91,8 @@ class BleDataPublisher : public NavDataPublisher, public SystemStatusPublisher {
 public:
   void publishNavData(const NavDataSample &sample) override;
   void publishSystemStatus(const SystemStatusSample &sample) override;
+  void notifyLastStatus();
+  bool hasLastStatus() const { return haveLastStatus; }
 
 private:
   float lastLat = 0.0f;
@@ -98,6 +101,8 @@ private:
   float lastSpeed = 0.0f;
   float lastAlt = 0.0f;
   bool haveLastNav = false;
+  std::string lastStatusJson;
+  bool haveLastStatus = false;
 };
 
 static BleDataPublisher gBlePublisher;
@@ -271,7 +276,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleConnected = true;
     currentConnHandle = (handle != 0) ? handle : 0xFFFF;
     lastKeepAliveMillis = millis();
-    if (pCharStatus) {
+    if (gBlePublisher.hasLastStatus()) {
+      gBlePublisher.notifyLastStatus();
+    } else if (pCharStatus) {
       char buf[80];
       int len =
           snprintf(buf, sizeof(buf),
@@ -585,9 +592,6 @@ void BleDataPublisher::publishNavData(const NavDataSample &sample) {
 }
 
 void BleDataPublisher::publishSystemStatus(const SystemStatusSample &sample) {
-  if (!pCharStatus || !bleConnected)
-    return;
-
   char json[112];
   int len = snprintf(json, sizeof(json),
                      "{\"fix\":%u,\"hdop\":%.1f,\"signals\":%s,\"ttff\":%d}",
@@ -596,8 +600,25 @@ void BleDataPublisher::publishSystemStatus(const SystemStatusSample &sample) {
                      static_cast<int>(sample.ttffSeconds));
   if (len <= 0)
     return;
-  pCharStatus->setValue((uint8_t *)json, len);
-  pCharStatus->notify();
+  lastStatusJson.assign(json, static_cast<size_t>(len));
+  haveLastStatus = true;
+
+  if (!pCharStatus)
+    return;
+
+  pCharStatus->setValue(lastStatusJson);
+  if (bleConnected) {
+    pCharStatus->notify();
+  }
+}
+
+void BleDataPublisher::notifyLastStatus() {
+  if (!haveLastStatus || !pCharStatus)
+    return;
+  pCharStatus->setValue(lastStatusJson);
+  if (bleConnected) {
+    pCharStatus->notify();
+  }
 }
 
 void updateApControlCharacteristic(bool apActive) {
