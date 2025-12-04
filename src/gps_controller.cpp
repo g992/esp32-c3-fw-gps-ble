@@ -9,6 +9,7 @@
 #include "ubx_command_set.h"
 
 #include <Arduino.h>
+#include "driver/temp_sensor.h"
 #include <Preferences.h>
 #include <ctype.h>
 #include <iarduino_GPS_NMEA.h>
@@ -23,9 +24,11 @@ constexpr const char *kGpsProfileKey = "profile";
 constexpr const char *kGpsSettingsProfileKey = "cfgsel";
 constexpr const char *kGpsCustomProfileKey = "custprof";
 constexpr const char *kGpsCustomSettingsKey = "custset";
+constexpr const char *kGpsReceiverTypeKey = "gnssrx";
 constexpr UbxConfigProfile kDefaultUbxProfile = UbxConfigProfile::FullSystems;
 constexpr UbxSettingsProfile kDefaultUbxSettingsProfile =
     UbxSettingsProfile::DefaultRamBbr;
+constexpr GnssReceiverType kDefaultReceiverType = GnssReceiverType::Ublox;
 constexpr size_t kUbxPayloadBufferSize = 196;
 constexpr uint32_t kUbxAckTimeoutMs = 600;
 constexpr uint32_t kUbxResponseTimeoutMs = 1200;
@@ -34,6 +37,25 @@ constexpr uint32_t kUbxDrainWindowMs = 50;
 constexpr uint32_t kUbxStartupDelayMs = 250;
 constexpr uint8_t kUbxValgetLayerRam = 0;
 constexpr uint32_t kUbxKeyMask = 0xFFFFFFF8u;
+static bool initTempSensorOnce() {
+  static bool initialized = false;
+  if (initialized)
+    return true;
+  temp_sensor_config_t cfg = TSENS_CONFIG_DEFAULT();
+  cfg.dac_offset = TSENS_DAC_L2;
+  if (temp_sensor_set_config(cfg) != ESP_OK)
+    return false;
+  if (temp_sensor_start() != ESP_OK)
+    return false;
+  initialized = true;
+  return true;
+}
+
+static bool readChipTemperature(float &outC) {
+  if (!initTempSensorOnce())
+    return false;
+  return temp_sensor_read_celsius(&outC) == ESP_OK;
+}
 
 struct UbxFrame {
   uint8_t msgClass = 0;
@@ -520,6 +542,7 @@ void GpsController::begin() {
   state = GpsRuntimeState{};
   state.bootMillis = millis();
   gpsSerialBaudValue = loadStoredGpsBaud();
+  receiverTypeValue = loadStoredReceiverType();
   currentProfile = loadStoredUbxProfile();
   currentSettingsProfile = loadStoredUbxSettingsProfile();
   loadStoredCustomCommands();
@@ -530,6 +553,7 @@ void GpsController::begin() {
   pinMode(GPS_EN, OUTPUT);
   digitalWrite(GPS_EN, HIGH);
 
+  initTempSensorOnce();
   applyUbxProfile(currentProfile);
 }
 
@@ -582,6 +606,14 @@ UbxSettingsProfile GpsController::ubxSettingsProfile() const {
 
 bool GpsController::applyUbxProfile(UbxConfigProfile profile) {
   (void)profile;
+  if (receiverTypeValue != GnssReceiverType::Ublox) {
+    logPrintln("[gps] GNSS type is generic, skipping UBX configuration");
+    configureGpsSerial(true, true);
+    resetNavigationState();
+    state.ubxLinkOk = false;
+    state.ubxConfigured = false;
+    return true;
+  }
   if (state.passthroughActive) {
     logPrintln("[gps] Cannot apply UBX profile while in passthrough mode");
     return false;
@@ -630,6 +662,31 @@ bool GpsController::setUbxSettingsProfile(UbxSettingsProfile profile) {
   }
   bool success = applyUbxProfile(currentProfile);
   updateUbxSettingsProfileCharacteristic(profile);
+  return success;
+}
+
+bool GpsController::setReceiverType(GnssReceiverType type) {
+  if (type != GnssReceiverType::Ublox &&
+      type != GnssReceiverType::GenericNmea) {
+    type = kDefaultReceiverType;
+  }
+  if (type == receiverTypeValue) {
+    return false;
+  }
+  receiverTypeValue = type;
+  persistReceiverType(type);
+  logPrintf("[gps] GNSS receiver type -> %s\n",
+            (type == GnssReceiverType::Ublox) ? "ublox" : "nmea");
+
+  bool success = true;
+  if (receiverTypeValue == GnssReceiverType::Ublox) {
+    success = applyUbxProfile(currentProfile);
+  } else {
+    configureGpsSerial(true, true);
+    resetNavigationState();
+    state.ubxLinkOk = false;
+    state.ubxConfigured = false;
+  }
   return success;
 }
 
@@ -748,6 +805,27 @@ void GpsController::persistGpsBaud(uint32_t baud) {
   }
 }
 
+GnssReceiverType GpsController::loadStoredReceiverType() {
+  Preferences prefs;
+  uint8_t stored = static_cast<uint8_t>(kDefaultReceiverType);
+  if (prefs.begin(kGpsPrefsNamespace, true)) {
+    stored = prefs.getUChar(kGpsReceiverTypeKey, stored);
+    prefs.end();
+  }
+  if (stored > static_cast<uint8_t>(GnssReceiverType::GenericNmea)) {
+    stored = static_cast<uint8_t>(kDefaultReceiverType);
+  }
+  return static_cast<GnssReceiverType>(stored);
+}
+
+void GpsController::persistReceiverType(GnssReceiverType type) {
+  Preferences prefs;
+  if (prefs.begin(kGpsPrefsNamespace, false)) {
+    prefs.putUChar(kGpsReceiverTypeKey, static_cast<uint8_t>(type));
+    prefs.end();
+  }
+}
+
 UbxConfigProfile GpsController::loadStoredUbxProfile() {
   Preferences prefs;
   uint8_t stored = static_cast<uint8_t>(kDefaultUbxProfile);
@@ -827,6 +905,10 @@ void GpsController::resetNavigationState() {
   state.firstFixCaptured = false;
   state.ttffSeconds = -1;
   state.signalLevels = {};
+  state.activeSignalCount = 0;
+  state.satDebugCount = 0;
+  state.visibleSatellites = 0;
+  state.activeSatellites = 0;
   state.lastBleUpdate = millis();
   prevFix = 255;
   prevHdop10 = -1;
@@ -897,12 +979,44 @@ void GpsController::processNavigationUpdate() {
   }
 
   uint8_t strong = 0, medium = 0, weak = 0;
-  for (uint8_t i = 0; i < 20; i++) {
+  state.activeSignalCount = 0;
+  state.satDebugCount = 0;
+  state.visibleSatellites = gpsParser.satellites[GPS_VISIBLE];
+  state.activeSatellites = activeSatellites;
+
+  for (size_t i = 0; i < kMaxTrackedSatellites; i++) {
     uint8_t id = state.satelliteInfo[i][0];
     uint8_t snr = state.satelliteInfo[i][1];
+    uint8_t constellation = state.satelliteInfo[i][2];
     uint8_t active = state.satelliteInfo[i][3];
+    uint8_t elevation = state.satelliteInfo[i][4];
+    uint16_t azLow = static_cast<uint16_t>(state.satelliteInfo[i][5]);
+    uint16_t azHigh = static_cast<uint16_t>(state.satelliteInfo[i][6]);
+    uint16_t azimuth = azLow;
+    if (azHigh != 0) {
+      azimuth = static_cast<uint16_t>(azLow + azHigh);
+    }
+    if (azimuth > 360) {
+      azimuth = 360;
+    }
+
+    if (id && state.satDebugCount < kMaxTrackedSatellites) {
+      SatelliteDebugEntry entry;
+      entry.id = id;
+      entry.snr = snr;
+      entry.constellation = constellation;
+      entry.active = active;
+      entry.elevation = elevation;
+      entry.azimuth = azimuth;
+      state.satDebug[state.satDebugCount++] = entry;
+    }
+
     if (!id || !active)
       continue;
+
+    if (state.activeSignalCount < kMaxTrackedSatellites) {
+      state.activeSignalDb[state.activeSignalCount++] = snr;
+    }
     if (snr > 30)
       strong++;
     else if (snr >= 20)
@@ -984,6 +1098,42 @@ uint8_t GpsController::determineSystemStatus(uint8_t fix,
     return STATUS_FIX_SYNC;
   }
   return STATUS_READY;
+}
+
+GpsDebugSnapshot GpsController::debugSnapshot() const {
+  GpsDebugSnapshot snapshot;
+  snapshot.uptimeSeconds =
+      static_cast<uint32_t>((millis() - state.bootMillis) / 1000UL);
+
+  float temp = 0.0f;
+  if (readChipTemperature(temp)) {
+    snapshot.tempValid = true;
+    snapshot.tempC = temp;
+  } else {
+    snapshot.tempValid = state.tempValid;
+    snapshot.tempC = state.lastTempC;
+  }
+
+  size_t signalCount = state.activeSignalCount;
+  if (signalCount > kMaxTrackedSatellites) {
+    signalCount = kMaxTrackedSatellites;
+  }
+  for (size_t i = 0; i < signalCount; ++i) {
+    snapshot.signalDb[i] = state.activeSignalDb[i];
+  }
+  snapshot.signalCount = signalCount;
+
+  size_t satCount = state.satDebugCount;
+  if (satCount > kMaxTrackedSatellites) {
+    satCount = kMaxTrackedSatellites;
+  }
+  for (size_t i = 0; i < satCount; ++i) {
+    snapshot.satellites[i] = state.satDebug[i];
+  }
+  snapshot.satelliteCount = satCount;
+  snapshot.visibleCount = state.visibleSatellites;
+  snapshot.activeCount = state.activeSatellites;
+  return snapshot;
 }
 
 bool GpsController::verifyUbxProfile(UbxConfigProfile profile) {

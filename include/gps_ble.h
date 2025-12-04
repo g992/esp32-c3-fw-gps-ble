@@ -11,6 +11,8 @@
 static const char *GPS_SERVICE_UUID = "14f0514a-e15f-4ad3-89a6-b4cb3ac86abe";
 static const char *CHAR_NAVDATA_UUID = "12c64fea-7ed9-40be-9c7e-9912a5050d23";
 static const char *CHAR_STATUS_UUID = "3e4f5d6c-7b8a-9d0e-1f2a-3b4c5d6e7f8a";
+static const char *CHAR_DEBUG_STATUS_UUID =
+    "f877c02d-5a02-4cc7-a4f6-e4bb49519eb9";
 static const char *CHAR_INPUT_VOLTAGE_UUID =
     "81b2c6f8-cb9e-4069-9a2e-9e5abca5d56e";
 static const char *CHAR_WIFI_STATUS_UUID = "9b9a3f07-3a36-4c74-a48a-4ad0d68f1d39";
@@ -18,6 +20,8 @@ static const char *CHAR_AP_CONTROL_UUID =
     "a37f8c1b-281d-4e15-8fb2-0b7e6ebd21c0";
 static const char *CHAR_MODE_CONTROL_UUID =
     "d047f6b3-5f7c-4e5b-9c21-4c0f2b6a8f10";
+static const char *CHAR_GNSS_TYPE_UUID =
+    "2ffc9c6e-34e2-4ad4-af74-9493f5276965";
 static const char *CHAR_GPS_BAUD_UUID =
     "f3a1a816-28f2-4b6d-9f76-6f7aa2d06123";
 static const char *CHAR_UBX_PROFILE_UUID =
@@ -35,10 +39,12 @@ static const char *CHAR_BUILD_VERSION_UUID =
 
 extern NimBLECharacteristic *pCharNavData;
 extern NimBLECharacteristic *pCharStatus;
+extern NimBLECharacteristic *pCharDebugStatus;
 extern NimBLECharacteristic *pCharInputVoltage;
 extern NimBLECharacteristic *pCharWifiStatus;
 extern NimBLECharacteristic *pCharApControl;
 extern NimBLECharacteristic *pCharModeControl;
+extern NimBLECharacteristic *pCharGnssType;
 extern NimBLECharacteristic *pCharGpsBaud;
 extern NimBLECharacteristic *pCharUbxProfile;
 extern NimBLECharacteristic *pCharUbxSettingsProfile;

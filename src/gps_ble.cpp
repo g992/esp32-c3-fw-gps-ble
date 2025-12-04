@@ -2,6 +2,7 @@
 #include "data_channel.h"
 #include "firmware_app.h"
 #include "gps_config.h"
+#include "gps_controller.h"
 #include "gps_serial_control.h"
 #include "logger.h"
 #include "ota_service.h"
@@ -13,10 +14,12 @@
 
 NimBLECharacteristic *pCharNavData = nullptr;
 NimBLECharacteristic *pCharStatus = nullptr;
+NimBLECharacteristic *pCharDebugStatus = nullptr;
 NimBLECharacteristic *pCharInputVoltage = nullptr;
 NimBLECharacteristic *pCharWifiStatus = nullptr;
 NimBLECharacteristic *pCharApControl = nullptr;
 NimBLECharacteristic *pCharModeControl = nullptr;
+NimBLECharacteristic *pCharGnssType = nullptr;
 NimBLECharacteristic *pCharGpsBaud = nullptr;
 NimBLECharacteristic *pCharUbxProfile = nullptr;
 NimBLECharacteristic *pCharUbxSettingsProfile = nullptr;
@@ -85,6 +88,74 @@ static void refreshWifiStatusCharacteristic() {
   if (len > 0) {
     pCharWifiStatus->setValue(reinterpret_cast<uint8_t *>(buffer), len);
   }
+}
+
+static void refreshGnssTypeCharacteristic() {
+  if (!pCharGnssType)
+    return;
+  GnssReceiverType type = gpsController().receiverType();
+  uint8_t value = (type == GnssReceiverType::Ublox) ? '0' : '1';
+  pCharGnssType->setValue(&value, 1);
+}
+
+static void refreshDebugStatusCharacteristic() {
+  if (!pCharDebugStatus)
+    return;
+
+  GpsDebugSnapshot snapshot = gpsController().debugSnapshot();
+
+  std::string json;
+  json.reserve(256);
+  json.append("{\"signalsDb\":[");
+  for (size_t i = 0; i < snapshot.signalCount; ++i) {
+    if (i > 0) {
+      json.push_back(',');
+    }
+    json.append(std::to_string(static_cast<unsigned>(snapshot.signalDb[i])));
+  }
+  json.append("],\"visible\":");
+  json.append(std::to_string(static_cast<unsigned>(snapshot.visibleCount)));
+  json.append(",\"active\":");
+  json.append(std::to_string(static_cast<unsigned>(snapshot.activeCount)));
+  json.append(",\"temp\":");
+  if (snapshot.tempValid) {
+    char buf[16];
+    int len = snprintf(buf, sizeof(buf), "%.2f",
+                       static_cast<double>(snapshot.tempC));
+    if (len > 0) {
+      json.append(buf, static_cast<size_t>(len));
+    } else {
+      json.append("null");
+    }
+  } else {
+    json.append("null");
+  }
+  json.append(",\"satellites\":[");
+  for (size_t i = 0; i < snapshot.satelliteCount; ++i) {
+    const auto &sat = snapshot.satellites[i];
+    if (i > 0) {
+      json.push_back(',');
+    }
+    json.append("{\"id\":");
+    json.append(std::to_string(static_cast<unsigned>(sat.id)));
+    json.append(",\"snr\":");
+    json.append(std::to_string(static_cast<unsigned>(sat.snr)));
+    json.append(",\"c\":");
+    json.append(std::to_string(static_cast<unsigned>(sat.constellation)));
+    json.append(",\"active\":");
+    json.append(std::to_string(static_cast<unsigned>(sat.active)));
+    json.append(",\"el\":");
+    json.append(std::to_string(static_cast<unsigned>(sat.elevation)));
+    json.append(",\"az\":");
+    json.append(std::to_string(static_cast<unsigned>(sat.azimuth)));
+    json.push_back('}');
+  }
+  json.append("],\"uptime\":");
+  json.append(
+      std::to_string(static_cast<unsigned long>(snapshot.uptimeSeconds)));
+  json.push_back('}');
+
+  pCharDebugStatus->setValue(json);
 }
 
 class BleDataPublisher : public NavDataPublisher, public SystemStatusPublisher {
@@ -290,8 +361,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
       }
     }
     refreshWifiStatusCharacteristic();
+    refreshDebugStatusCharacteristic();
     refreshApControlCharacteristic();
     refreshModeCharacteristic();
+    refreshGnssTypeCharacteristic();
     refreshGpsBaudCharacteristic();
     refreshUbxProfileCharacteristic();
     refreshUbxSettingsProfileCharacteristic();
@@ -328,6 +401,10 @@ class WifiStatusCallbacks : public NimBLECharacteristicCallbacks {
   void onRead(NimBLECharacteristic *) { refreshWifiStatusCharacteristic(); }
 } wifiStatusCallbacks;
 
+class DebugStatusCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic *) { refreshDebugStatusCharacteristic(); }
+} debugStatusCallbacks;
+
 class ApControlCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *characteristic) {
     const std::string &value = characteristic->getValue();
@@ -351,6 +428,20 @@ class ModeControlCallbacks : public NimBLECharacteristicCallbacks {
 
   void onRead(NimBLECharacteristic *) { refreshModeCharacteristic(); }
 } modeControlCallbacks;
+
+class GnssTypeCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) {
+    const std::string &value = characteristic->getValue();
+    GnssReceiverType type = GnssReceiverType::Ublox;
+    if (!value.empty() && value[0] == '1') {
+      type = GnssReceiverType::GenericNmea;
+    }
+    gpsController().setReceiverType(type);
+    refreshGnssTypeCharacteristic();
+  }
+
+  void onRead(NimBLECharacteristic *) { refreshGnssTypeCharacteristic(); }
+} gnssTypeCallbacks;
 
 class GpsBaudCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *characteristic) {
@@ -480,6 +571,11 @@ void initBLE() {
       CHAR_STATUS_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pCharStatus->setCallbacks(&generalChrCallbacks);
 
+  pCharDebugStatus = pService->createCharacteristic(
+      CHAR_DEBUG_STATUS_UUID, NIMBLE_PROPERTY::READ);
+  pCharDebugStatus->setCallbacks(&debugStatusCallbacks);
+  refreshDebugStatusCharacteristic();
+
   pCharInputVoltage = pService->createCharacteristic(
       CHAR_INPUT_VOLTAGE_UUID,
       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
@@ -501,6 +597,11 @@ void initBLE() {
   pCharModeControl->setCallbacks(&modeControlCallbacks);
   registerModeChangeHandler(onModeChanged);
   refreshModeCharacteristic();
+
+  pCharGnssType = pService->createCharacteristic(
+      CHAR_GNSS_TYPE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  pCharGnssType->setCallbacks(&gnssTypeCallbacks);
+  refreshGnssTypeCharacteristic();
 
   pCharGpsBaud = pService->createCharacteristic(
       CHAR_GPS_BAUD_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);

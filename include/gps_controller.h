@@ -7,6 +7,20 @@
 #include "gps_runtime_state.h"
 #include "ubx_command_set.h"
 
+enum class GnssReceiverType : uint8_t { Ublox = 0, GenericNmea = 1 };
+
+struct GpsDebugSnapshot {
+  SatelliteDebugEntry satellites[kMaxTrackedSatellites] = {};
+  size_t satelliteCount = 0;
+  uint8_t signalDb[kMaxTrackedSatellites] = {};
+  size_t signalCount = 0;
+  uint8_t visibleCount = 0;
+  uint8_t activeCount = 0;
+  float tempC = 0.0f;
+  bool tempValid = false;
+  uint32_t uptimeSeconds = 0;
+};
+
 class GpsController {
 public:
   void begin();
@@ -17,13 +31,18 @@ public:
   UbxConfigProfile ubxProfile() const;
   bool setUbxSettingsProfile(UbxSettingsProfile profile);
   UbxSettingsProfile ubxSettingsProfile() const;
+  bool setReceiverType(GnssReceiverType type);
+  GnssReceiverType receiverType() const { return receiverTypeValue; }
   void addNavPublisher(NavDataPublisher *publisher);
   void addStatusPublisher(SystemStatusPublisher *publisher);
+  GpsDebugSnapshot debugSnapshot() const;
 
 private:
   void configureGpsSerial(bool enableParser, bool forceReinit);
   uint32_t loadStoredGpsBaud();
   void persistGpsBaud(uint32_t baud);
+  GnssReceiverType loadStoredReceiverType();
+  void persistReceiverType(GnssReceiverType type);
   void resetNavigationState();
   void processPassthroughIO();
   void processNavigationUpdate();
@@ -38,6 +57,7 @@ private:
   bool applyUbxProfile(UbxConfigProfile profile);
 
   GpsRuntimeState state;
+  GnssReceiverType receiverTypeValue = GnssReceiverType::Ublox;
   uint32_t gpsSerialBaudValue = 0;
   UbxConfigProfile currentProfile = UbxConfigProfile::FullSystems;
   UbxSettingsProfile currentSettingsProfile =
